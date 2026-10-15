@@ -6,8 +6,9 @@ import { storage } from "./storage";
 import { sendSchema, settingsSchema, type Message } from "@shared/schema";
 import { checkOllama, normalizeOllamaUrl, ollamaUrl, previewMode, connectionError } from "./ollama";
 import { registerComputerRoutes } from "./computer";
+import { registerAuthRoutes, currentUser } from "./auth";
 
-const owner = (req: Request) => req.get("x-visitor-id") || "local";
+const owner = (req: Request) => currentUser(req)!.id;
 const active = new Map<string, AbortController>();
 const unavailable = "Ollama недоступна. Запустите Ollama на компьютере, где работает сервер Forma, и проверьте подключение.";
 const modelSchema = z.string().min(1).max(150).regex(/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/, "Проверьте имя модели");
@@ -31,8 +32,10 @@ async function readLines(response: globalThis.Response, onLine: (line: any) => v
   if (buffer.trim()) onLine(JSON.parse(buffer));
 }
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
-  app.get("/api/status", async (req, res) => {
-    res.json(await checkOllama(ollamaUrl(owner(req))));
+  registerAuthRoutes(app);
+  app.use("/api", (req, res, next) => {
+    if (!currentUser(req)) return fail(res, "Войдите в аккаунт.", 401);
+    next();
   });
   app.post("/api/connection", async (req, res) => {
     if (previewMode) return fail(res, "В облачном превью локальные адреса недоступны. Запустите полный проект на своём компьютере.", 403);

@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import { and, eq, desc } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 
-const sqlite = new Database(process.env.DATA_FILE || "data.db");
+export const sqlite = new Database(process.env.DATA_FILE || "data.db");
 sqlite.pragma("journal_mode = WAL");
 sqlite.exec(`
  CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, owner TEXT NOT NULL, title TEXT NOT NULL, model TEXT NOT NULL, messages TEXT NOT NULL, updated_at INTEGER NOT NULL);

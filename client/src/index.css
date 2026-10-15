@@ -72,3 +72,38 @@ html.dark,html[data-theme="dark"] {
 @media(max-width:1150px){.computer-grid{grid-template-columns:1fr}.computer-browser-panel{grid-row:1}.computer-browser-empty h2{font-size:var(--text-sm)}.computer-browser-empty p{font-size:var(--text-xs)}}
 @media(max-width:767px){.computer-page{padding:var(--space-6) var(--space-4)}.computer-heading{margin-bottom:var(--space-5)}.computer-heading h1{font-size:var(--text-lg);letter-spacing:-.4px}.computer-heading-actions>.secondary-button{padding:var(--space-2);font-size:var(--text-xs)}.browser-size,.window-dots{display:none}.computer-browser-empty{gap:var(--space-2)}.computer-browser-empty>svg{width:30px;height:30px}.computer-browser-footer{font-size:var(--text-xs)}.computer-result{padding:var(--space-4)}}
 @media(max-width:767px){.computer-browser-panel{grid-row:auto}.computer-journal ol{max-height:220px}}
+.message-edit-form {
+  display: block;
+  width: 100%;
+}
+
+.message-edit-form textarea {
+  width: 100%;
+  min-height: 80px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+  resize: vertical;
+}
+
+.message-edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.message-edit-actions button {
+  border: 1px solid #d1d5db;
+  background: #fff;
+  border-radius: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.message-edit-actions button:first-child {
+  background: #111;
+  color: #fff;
+  border-color: #111;
+}
+

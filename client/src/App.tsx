@@ -5,7 +5,7 @@ import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Plus, Search, Box, Settings2, ArrowUp, ArrowUpRight, ChevronDown, ChevronRight, PanelLeftClose, PanelLeft, Sun, Moon, CircleHelp, MessageSquare, SlidersHorizontal, Paperclip, X, FileText, Pencil, Code2, Lightbulb, GraduationCap, ArrowRight, Download, RefreshCw, Check, Copy, Trash2, Ellipsis, Monitor, Plug, Square, Loader2, ExternalLink, CheckCircle2, Circle, LockKeyhole } from "lucide-react";
+import { Plus, Search, Box, Settings2, ArrowUp, ArrowUpRight, ChevronDown, ChevronRight, PanelLeftClose, PanelLeft, Sun, Moon, CircleHelp, MessageSquare, SlidersHorizontal, Paperclip, X, FileText, Pencil, Code2, Lightbulb, GraduationCap, ArrowRight, Download, RefreshCw, Check, Copy, Trash2, Ellipsis, Monitor, Plug, Square, Loader2, ExternalLink, CheckCircle2, Circle, LockKeyhole, LogOut } from "lucide-react";
 import { Sidebar, SidebarProvider, SidebarContent, SidebarFooter, SidebarHeader, useSidebar } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -19,6 +19,7 @@ import Computer from "./Computer";
 type Model = { name: string; size: number; remote_host?: string; details?: { parameter_size?: string; quantization_level?: string; family?: string } };
 type Status = { connected: boolean; host: string; models: Model[]; backend?: boolean; message?: string; editable?: boolean; preview?: boolean };
 type ChatSummary = Omit<Chat, "owner" | "messages"> & { preview: string; count: number };
+
 const prompts = [
   { icon: Pencil, title: "Найти нужные слова", text: "Письма, тексты и свежий взгляд", prompt: "Помоги написать текст. Сначала задай мне вопросы об аудитории, цели и желаемом стиле." },
   { icon: Code2, title: "Разобраться в коде", text: "От первой строки до решения", prompt: "Помоги разобраться с кодом. Уточни язык программирования и задачу, которую я хочу решить." },
@@ -54,7 +55,7 @@ function Markdown({ text, copy }: { text: string; copy: (s: string) => void }) {
     }}><Copy size={14} /> Копировать</button></div><pre>{children}</pre></div>,
   }}>{text}</ReactMarkdown>;
 }
-function Workspace() {
+function Workspace({ user }: { user: { id: string; username: string } }) {
   const [location, navigate] = useLocation();
   const chatId = location.startsWith("/chat/") ? location.split("/")[2] : null;
   const isModels = location === "/models";
@@ -95,6 +96,39 @@ function Workspace() {
   const models = status?.models || [];
   const model = selected || chatQuery.data?.model || settings.model || models[0]?.name || "";
   const current = chats.find(c => c.id === chatId);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  const [editedMessages, setEditedMessages] = useState<Record<string, string>>({});
+
+  const displayMessages = messages.map((m) =>
+    editedMessages[m.id]
+      ? { ...m, content: editedMessages[m.id] }
+      : m
+  );
+
+  const startEdit = (m: any) => {
+    setEditingId(m.id);
+    setDraft(m.content ?? "");
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setDraft("");
+  };
+
+  const saveEdit = (m: any) => {
+    const text = draft.trim();
+    if (!text) return;
+
+    setEditedMessages((prev) => ({
+      ...prev,
+      [m.id]: text,
+    }));
+
+    setEditingId(null);
+    setDraft("");
+  };
+
 
   useEffect(() => {
     if (settingsQuery.data) {
@@ -121,7 +155,13 @@ function Workspace() {
     window.addEventListener("keydown", shortcut); return () => window.removeEventListener("keydown", shortcut);
   }, []);
   function newChat() { navigate("/"); setDraft(""); setAttachment(null); setError(""); setOpenMobile(false); textarea.current?.focus(); }
-  function goTo(path: string) { navigate(path); setOpenMobile(false); }
+function goTo(path: string) { navigate(path); setOpenMobile(false); }
+  async function logout() {
+    try { await apiRequest("POST", "/api/auth/logout"); } catch {}
+    queryClient.removeQueries({ predicate: q => q.queryKey[0] !== "/api/auth/me" });
+    queryClient.setQueryData(["/api/auth/me"], { user: null });
+    location.hash = "#/";
+  }
   function openSettings(tab = "connection") { setSettingsTab(tab); setSettingsOpen(true); }
   async function saveSettings(next: Settings) {
     const res = await apiRequest("PUT", "/api/settings", next);
@@ -227,7 +267,7 @@ function Workspace() {
           <span className="connect-link">{status?.connected ? "Ollama подключена" : "Подключить Ollama"}<ArrowRight size={14}/></span>
         </button>
         <div className="side-footer-links"><button data-testid="button-help" onClick={() => { setOpenMobile(false); setHelpOpen(true); }}><CircleHelp size={17}/>Как это работает</button><button data-testid="button-settings" onClick={() => { setOpenMobile(false); openSettings(); }}><Settings2 size={17}/>Настройки</button></div>
-        <div className="profile"><span className="profile-avatar">Я</span><div>Личное пространство<small>Сделано для ваших идей</small></div><IconButton label={theme === "light" ? "Тёмная тема" : "Светлая тема"} testid="button-theme-sidebar" onClick={changeTheme}>{theme === "light" ? <Moon size={17}/> : <Sun size={17}/>}</IconButton></div>
+        <div className="profile"><span className="profile-avatar">{user.username.slice(0, 1).toUpperCase()}</span><div>{user.username}<small>Личный аккаунт</small></div><IconButton label="Выйти" testid="button-logout" onClick={logout}><LogOut size={17}/></IconButton><IconButton label={theme === "light" ? "Тёмная тема" : "Светлая тема"} testid="button-theme-sidebar" onClick={changeTheme}>{theme === "light" ? <Moon size={17}/> : <Sun size={17}/>}</IconButton></div>
       </SidebarFooter>
     </Sidebar>
     <main className="main-panel">
@@ -235,13 +275,128 @@ function Workspace() {
       {isComputer ? <Computer models={models} model={model} connected={!!status?.connected} connect={() => openSettings()}/> : isModels ? <ModelsView status={status} refreshing={statusQuery.isFetching} refresh={() => statusQuery.refetch()} select={name => { chooseModel(name); navigate("/"); }} connect={() => openSettings()} /> : chatId ? <>
         <div className="conversation-scroll" ref={scroll}>
           <div className="messages">
-            {chatQuery.isLoading && !live ? <div className="message-loading"><div/><div/><div/></div> : chatQuery.isError && !live ? <div className="state-empty"><MessageSquare size={32}/><h1>Не удалось открыть диалог</h1><p>Попробуйте загрузить его ещё раз.</p><button className="primary-button" data-testid="button-reload-chat" onClick={() => chatQuery.refetch()}>Повторить</button></div> : !messages.length ? <div className="state-empty"><Logo/><h1>Продолжим разговор?</h1><p>Напишите первое сообщение в этом диалоге.</p></div> : messages.map((m, i) => <article key={m.id} className={`message ${m.role}`} data-testid={`message-${i}`}>
-              {m.role === "assistant" && <div className="assistant-heading"><Logo/><span>forma</span><small>{m.model}</small></div>}
-              <div className="message-body">{m.content ? <Markdown text={m.content} copy={copy}/> : <div className="thinking"><span/><span/><span/><small>Модель готовит ответ</small></div>}</div>
-              {m.interrupted && <small className="interrupted">Ответ был остановлен</small>}
-              {m.content && <div className="message-actions"><IconButton label="Копировать сообщение" testid={`copy-message-${i}`} onClick={() => copy(m.content)}><Copy size={15}/></IconButton>{m.role === "assistant" && i === messages.length - 1 && !busy && <IconButton label="Ответить заново" testid="button-regenerate" onClick={() => send(true)}><RefreshCw size={15}/></IconButton>}</div>}
-            </article>)}
-            {!busy && messages.at(-1)?.role === "user" && <button className="retry-answer" data-testid="button-retry-answer" onClick={() => send(true)}><RefreshCw size={15}/>Получить ответ</button>}
+            {chatQuery.isLoading && !live ? (
+              <div className="message-loading"><div /><div /><div /></div>
+            ) : chatQuery.isError && !live ? (
+              <div className="state-empty">
+                <MessageSquare size={32} />
+                <h1>Не удалось открыть диалог</h1>
+                <p>Попробуйте загрузить его ещё раз.</p>
+                <button
+                  className="primary-button"
+                  data-testid="button-reload-chat"
+                  onClick={() => chatQuery.refetch()}
+                >
+                  Повторить
+                </button>
+              </div>
+            ) : !displayMessages.length ? (
+              <div className="state-empty">
+                <Logo />
+                <h1>Продолжим разговор?</h1>
+                <p>Напишите первое сообщение в этом диалоге.</p>
+              </div>
+            ) : (
+              displayMessages.map((m, i) => {
+                const isEditing = editingId === m.id;
+
+                return (
+                  <article
+                    key={m.id}
+                    className={`message ${m.role}`}
+                    data-testid={`message-${i}`}
+                  >
+                    {m.role === "assistant" && (
+                      <div className="assistant-heading">
+                        <Logo />
+                        <span>forma</span>
+                        <small>{m.model}</small>
+                      </div>
+                    )}
+
+                    <div className="message-body">
+                      {isEditing ? (
+                        <form
+                          className="message-edit-form"
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            saveEdit(m);
+                          }}
+                        >
+                          <textarea
+                            value={draft}
+                            onChange={(e) => setDraft(e.target.value)}
+                            rows={Math.max(2, Math.min(10, draft.split("\n").length + 1))}
+                          />
+                          <div className="message-edit-actions">
+                            <button type="submit">Сохранить</button>
+                            <button type="button" onClick={cancelEdit}>
+                              Отмена
+                            </button>
+                          </div>
+                        </form>
+                      ) : m.content ? (
+                        <Markdown text={m.content} copy={copy} />
+                      ) : (
+                        <div className="thinking">
+                          <span />
+                          <span />
+                          <span />
+                          <small>Модель готовит ответ</small>
+                        </div>
+                      )}
+                    </div>
+
+                    {m.interrupted && (
+                      <small className="interrupted">Ответ был остановлен</small>
+                    )}
+
+                    <div className="message-actions">
+                      <IconButton
+                        label="Копировать сообщение"
+                        testid={`copy-message-${i}`}
+                        onClick={() => copy(m.content)}
+                      >
+                        <Copy size={15} />
+                      </IconButton>
+
+                      {m.content && (
+                        <IconButton
+                          label="Изменить сообщение"
+                          testid={`edit-message-${i}`}
+                          onClick={() => startEdit(m)}
+                        >
+                          <Pencil size={15} />
+                        </IconButton>
+                      )}
+
+                      {m.role === "assistant" &&
+                        i === displayMessages.length - 1 &&
+                        !busy && (
+                          <IconButton
+                            label="Ответить заново"
+                            testid="button-regenerate"
+                            onClick={() => send(true)}
+                          >
+                            <RefreshCw size={15} />
+                          </IconButton>
+                        )}
+                    </div>
+                  </article>
+                );
+              })
+            )}
+
+            {!busy && displayMessages.at(-1)?.role === "user" && (
+              <button
+                className="retry-answer"
+                data-testid="button-retry-answer"
+                onClick={() => send(true)}
+              >
+                <RefreshCw size={15} />
+                Получить ответ
+              </button>
+            )}
           </div>
         </div>
         <div className="bottom-composer">{composer}<p className="composer-hint">Ответы моделей могут быть неточными. Проверяйте важное.</p></div>
@@ -259,7 +414,7 @@ function Workspace() {
       </div>}
     </main>
     <SettingsDialog open={settingsOpen} setOpen={setSettingsOpen} tab={settingsTab} setTab={setSettingsTab} settings={settings} save={saveSettings} status={status} refreshing={statusQuery.isFetching} refresh={() => statusQuery.refetch()} models={() => { setSettingsOpen(false); navigate("/models"); }} />
-    <Dialog open={helpOpen} onOpenChange={setHelpOpen}><DialogContent className="app-dialog help-dialog"><DialogHeader><DialogTitle>Знакомьтесь, Forma</DialogTitle><DialogDescription>Знакомый чат. Модели, которые выбираете вы.</DialogDescription></DialogHeader><div className="help-content"><div className="help-step"><span>01</span><div><h3>Запустите Ollama</h3><p>Установите Ollama на свой компьютер и откройте приложение. Сервер Forma должен работать на том же компьютере или иметь доступ к вашей Ollama.</p><a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer" data-testid="link-ollama-download">Скачать Ollama<ExternalLink size={14}/></a></div></div><div className="help-step"><span>02</span><div><h3>Добавьте свою модель</h3><p>Откройте «Модели», вставьте имя из библиотеки Ollama и нажмите «Загрузить». Файлы загрузятся на компьютер с Ollama.</p></div></div><div className="help-step"><span>03</span><div><h3>Начните разговор</h3><p>Выберите модель, напишите сообщение или прикрепите текстовый файл. История сохраняется в базе на сервере Forma.</p></div></div><div className="help-note">Веб-превью не подключается к Ollama на вашем компьютере автоматически. Для локальной работы запустите исходный проект Forma рядом с Ollama. Это личное приложение без входа по паролю: не открывайте локальный сервер в интернет.</div><div className="shortcuts"><span>Отправить <kbd>Enter</kbd></span><span>Новая строка <kbd>Shift + Enter</kbd></span><span>Поиск <kbd>Ctrl / ⌘ K</kbd></span></div></div></DialogContent></Dialog>
+    <Dialog open={helpOpen} onOpenChange={setHelpOpen}><DialogContent className="app-dialog help-dialog"><DialogHeader><DialogTitle>Знакомьтесь, Forma</DialogTitle><DialogDescription>Знакомый чат. Модели, которые выбираете вы.</DialogDescription></DialogHeader><div className="help-content"><div className="help-step"><span>01</span><div><h3>Запустите Ollama</h3><p>Установите Ollama на свой компьютер и откройте приложение. Сервер Forma должен работать на том же компьютере или иметь доступ к вашей Ollama.</p><a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer" data-testid="link-ollama-download">Скачать Ollama<ExternalLink size={14}/></a></div></div><div className="help-step"><span>02</span><div><h3>Добавьте свою модель</h3><p>Откройте «Модели», вставьте имя из библиотеки Ollama и нажмите «Загрузить». Файлы загрузятся на компьютер с Ollama.</p></div></div><div className="help-step"><span>03</span><div><h3>Начните разговор</h3><p>Выберите модель, напишите сообщение или прикрепите текстовый файл. История сохраняется в базе на сервере Forma.</p></div></div><div className="shortcuts"><span>Отправить <kbd>Enter</kbd></span><span>Новая строка <kbd>Shift + Enter</kbd></span><span>Поиск <kbd>Ctrl / ⌘ K</kbd></span></div></div></DialogContent></Dialog>
     <Dialog open={searchOpen} onOpenChange={setSearchOpen}><DialogContent className="app-dialog search-dialog"><DialogHeader><DialogTitle>Найти диалог</DialogTitle><DialogDescription>По названию или тексту сообщений</DialogDescription></DialogHeader><div className="search-input"><Search size={19}/><input autoFocus aria-label="Поиск диалогов" placeholder="О чём мы говорили?" data-testid="input-search" value={search} onChange={e => setSearch(e.target.value)}/></div><div className="search-results">{chats.filter(c => `${c.title} ${c.preview}`.toLowerCase().includes(search.toLowerCase())).map(c => <button key={c.id} data-testid={`search-result-${c.id}`} onClick={() => { navigate(`/chat/${c.id}`); setSearchOpen(false); }}><MessageSquare size={18}/><span>{c.title}<small>{c.preview.slice(0, 85) || "Пока без сообщений"}</small></span><ArrowUpRight size={16}/></button>)}{!chats.filter(c => `${c.title} ${c.preview}`.toLowerCase().includes(search.toLowerCase())).length && <div className="search-empty"><Search size={25}/><p>{search ? "Такого диалога пока нет" : "Ваши диалоги появятся здесь"}</p><small>{search ? "Попробуйте другое слово." : "Начните новый чат, и мы сохраним его для вас."}</small></div>}</div></DialogContent></Dialog>
     <Dialog open={!!rename} onOpenChange={v => { if (!v) setRename(null); }}><DialogContent className="app-dialog compact-dialog"><DialogHeader><DialogTitle>Название диалога</DialogTitle><DialogDescription>Так его будет проще найти в истории.</DialogDescription></DialogHeader><input className="text-input" aria-label="Название" value={renameText} onChange={e => setRenameText(e.target.value)} data-testid="input-rename" maxLength={120}/>{modalError && <p className="inline-error" role="alert">{modalError}</p>}<button className="primary-button" data-testid="button-save-rename" disabled={!renameText.trim() || operation} onClick={async () => { setOperation(true); try { await apiRequest("PATCH", `/api/chats/${rename!.id}`, { title: renameText }); await queryClient.invalidateQueries({ queryKey: ["/api/chats"] }); setRename(null); } catch(e: any) { setModalError(e.message); } finally { setOperation(false); } }}>Сохранить</button></DialogContent></Dialog>
     <Dialog open={!!deleteChat} onOpenChange={v => { if (!v) setDeleteChat(null); }}><DialogContent className="app-dialog compact-dialog"><DialogHeader><DialogTitle>Удалить диалог?</DialogTitle><DialogDescription>«{deleteChat?.title}» и все его сообщения будут удалены без возможности восстановления.</DialogDescription></DialogHeader>{modalError && <p role="alert" className="inline-error">{modalError}</p>}<div className="dialog-actions"><button className="secondary-button" data-testid="button-cancel-delete" onClick={() => setDeleteChat(null)}>Оставить</button><button className="primary-button danger" data-testid="button-confirm-delete" disabled={operation} onClick={async () => { setOperation(true); try { await apiRequest("DELETE", `/api/chats/${deleteChat!.id}`); if (chatId === deleteChat!.id) newChat(); await queryClient.invalidateQueries({ queryKey: ["/api/chats"] }); setDeleteChat(null); } catch(e: any) { setModalError(e.message); } finally { setOperation(false); } }}>Удалить диалог</button></div></DialogContent></Dialog>
@@ -292,13 +447,13 @@ function SettingsDialog({ open, setOpen, tab, setTab, settings, save, status, re
     {tab === "connection" ? <div className="connection-settings">
       <div className={`connection-box ${shown?.connected ? "connected" : ""}`}><span className="connection-large">{shown?.connected ? <CheckCircle2 size={23}/> : <Plug size={23}/>}</span><div><h3>{shown?.backend === false ? "Не запущен сервер Forma" : shown?.connected ? "Ollama на связи" : "Подключение к Ollama"}</h3><p>{shown?.connected ? `Доступно моделей: ${shown.models.length}` : shown?.backend === false ? "Один фронтенд не подключается к Ollama." : "Укажите адрес уже работающей Ollama."}</p></div><span className={`status-dot ${shown?.connected ? "green" : ""}`}/></div>
       <label className="field-label" htmlFor="ollama-url">Адрес вашей Ollama</label>
-      <div className="host-field editable-host"><Monitor size={17}/><input id="ollama-url" data-testid="input-ollama-url" value={host} disabled={status?.preview || checking} onChange={e => { setHost(e.target.value); setConnection(null); }} placeholder="http://127.0.0.1:11434" onKeyDown={e => { if (e.key === "Enter" && !status?.preview) checkConnection(); }}/></div>
+      <div className="host-field editable-host"><Monitor size={17}/><input id="ollama-url" data-testid="input-ollama-url" value={host} disabled={checking} onChange={e => { setHost(e.target.value); setConnection(null); }} placeholder="http://127.0.0.1:11434" onKeyDown={e => { if (e.key === "Enter" && !status?.preview) checkConnection(); }}/></div>
       <p className="field-hint">Изменения сохраняются после успешной проверки. Перезапуск не нужен.</p>
       {shown?.message && <div className={`connection-feedback ${shown.connected ? "success" : ""}`} role="status" data-testid="status-connection-details">{shown.message}</div>}
       {error && <p className="inline-error" role="alert" data-testid="error-connection">{error}</p>}
-      <div className="setup-guide"><h3>Локальный запуск Forma</h3><p><span>1</span>Распакуйте полный проект, не только папку public.</p><p><span>2</span>В корне проекта выполните <code>npm run launch</code>.</p><p><span>3</span>Откройте http://127.0.0.1:5000.</p></div>
-      <div className="help-note">{status?.preview ? "Это облачное превью. Оно не видит Ollama на вашем компьютере: используйте локальную версию из полного архива." : "Уже установленные модели появятся автоматически после подключения. Скачивать их заново не нужно. В Docker адрес localhost относится к контейнеру; используйте host.docker.internal на macOS/Windows."}</div>
-      <div className="dialog-actions"><button className="secondary-button" data-testid="button-refresh-backend" disabled={refreshing} onClick={refresh}><RefreshCw size={15}/>Обновить статус</button><button className="primary-button" data-testid="button-check-connection" disabled={checking || !!status?.preview} onClick={checkConnection}>{checking ? <Loader2 className="spin" size={16}/> : <Plug size={16}/>}Проверить и сохранить</button></div>
+      
+      
+      <div className="dialog-actions"><button className="secondary-button" data-testid="button-refresh-backend" disabled={refreshing} onClick={refresh}><RefreshCw size={15}/>Обновить статус</button><button className="primary-button" data-testid="button-check-connection" disabled={checking} onClick={checkConnection}>{checking ? <Loader2 className="spin" size={16}/> : <Plug size={16}/>}Проверить и сохранить</button></div>
       {shown?.connected && <button className="connection-models-link" data-testid="button-connected-models" onClick={models}>Открыть установленные модели<ArrowRight size={15}/></button>}
     </div> :
     <Form {...form}><form onSubmit={form.handleSubmit(async values => { try { setError(""); await save(values); setSaved(true); } catch (e: any) { setError(e.message); } })} className="settings-form">
@@ -345,6 +500,41 @@ function ModelsView({ status, refresh, refreshing, select, connect }: { status?:
     <div className="model-footnote"><LockKeyhole size={16}/><p>Локальные модели работают на вашем оборудовании. Облачные модели Ollama обрабатывают запросы на стороне провайдера.</p></div>
   </div>;
 }
+function AuthScreen() {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function submit() {
+    if (busy) return;
+    setBusy(true); setError("");
+    try {
+      const res = await apiRequest("POST", `/api/auth/${mode}`, { username, password });
+      const data = await res.json();
+      queryClient.removeQueries({ predicate: q => q.queryKey[0] !== "/api/auth/me" });
+      queryClient.setQueryData(["/api/auth/me"], data);
+    } catch (e: any) { setError(e.message); }
+    finally { setBusy(false); }
+  }
+  return <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
+    <div style={{ width: "100%", maxWidth: 360, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}><Logo/><strong style={{ fontSize: 22 }}>forma.</strong></div>
+      <h1 style={{ fontSize: 22, margin: 0 }}>{mode === "login" ? "Вход" : "Создать аккаунт"}</h1>
+      <input className="text-input" aria-label="Имя" placeholder="Имя пользователя" autoComplete="username" data-testid="input-username" value={username} onChange={e => setUsername(e.target.value)}/>
+      <input className="text-input" aria-label="Пароль" type="password" placeholder="Пароль (от 8 символов)" autoComplete={mode === "login" ? "current-password" : "new-password"} data-testid="input-password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => { if (e.key === "Enter") submit(); }}/>
+      {error && <p className="inline-error" role="alert">{error}</p>}
+      <button className="primary-button" data-testid="button-auth-submit" disabled={busy || !username.trim() || !password} onClick={submit}>{busy && <Loader2 className="spin" size={16}/>}{mode === "login" ? "Войти" : "Зарегистрироваться"}</button>
+      <button className="secondary-button" data-testid="button-auth-switch" onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(""); }}>{mode === "login" ? "Нет аккаунта? Создать" : "Уже есть аккаунт? Войти"}</button>
+    </div>
+  </div>;
+}
+function AuthGate() {
+  const me = useQuery<{ user: { id: string; username: string } | null }>({ queryKey: ["/api/auth/me"] });
+  if (me.isLoading) return null;
+  if (me.isError) return <div style={{ padding: 24 }}><p className="inline-error">{(me.error as Error).message}</p><button className="secondary-button" onClick={() => me.refetch()}>Повторить</button></div>;
+  return me.data?.user ? <Workspace key={me.data.user.id} user={me.data.user}/> : <AuthScreen/>;
+}
 export default function App() {
-  return <QueryClientProvider client={queryClient}><TooltipProvider><Router hook={useHashLocation}><SidebarProvider style={{ "--sidebar-width": "264px" } as CSSProperties}><Workspace/></SidebarProvider></Router></TooltipProvider></QueryClientProvider>;
+  return <QueryClientProvider client={queryClient}><TooltipProvider><Router hook={useHashLocation}><SidebarProvider style={{ "--sidebar-width": "264px" } as CSSProperties}><AuthGate/></SidebarProvider></Router></TooltipProvider></QueryClientProvider>;
 }

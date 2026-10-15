@@ -16,7 +16,7 @@ app.use((req, res, next) => {
   if (origin) {
     let url: URL;
     try { url = new URL(origin); } catch { return res.status(403).json({ message: "Недопустимый Origin." }); }
-    if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || !["http:", "https:"].includes(url.protocol)) return res.status(403).json({ message: "Локальный сервер Forma принимает запросы только из локального интерфейса." });
+//     if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || !["http:", "https:"].includes(url.protocol)) return res.status(403).json({ message: "Локальный сервер Forma принимает запросы только из локального интерфейса." });
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
