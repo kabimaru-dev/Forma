@@ -15,6 +15,7 @@ import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import type { Settings, Chat, Message } from "@shared/schema";
 import { defaultSettings } from "@shared/defaults";
 import Computer from "./Computer";
+import ModePicker, { modeId, readableMode, type Level, type Reasoning, type Speed, type ModeSelection, type ModesPublic } from "@/components/ModePicker";
 
 type Model = { name: string; size: number; remote_host?: string; details?: { parameter_size?: string; quantization_level?: string; family?: string } };
 type Status = { connected: boolean; host: string; models: Model[]; backend?: boolean; message?: string; editable?: boolean; preview?: boolean };
@@ -76,7 +77,19 @@ function Workspace({ user }: { user: { id: string; username: string } }) {
   const [helpOpen, setHelpOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [modelMenu, setModelMenu] = useState(false);
+  const modesQuery = useQuery<ModesPublic>({ queryKey: ["/api/modes"], staleTime: 5000, refetchInterval: 15000 });
+  const [manualMode, setManualMode] = useState(() => localStorage.getItem("forma.manualMode") === "true");
+  const [modeSelection, setModeSelection] = useState<ModeSelection>(() => {
+    const read = <T extends string>(key: string, options: readonly T[], fallback: T): T => {
+      const item = localStorage.getItem(`forma.${key}`) as T | null;
+      return item && options.includes(item) ? item : fallback;
+    };
+    return {
+      level: read<Level>("level", ["core", "plus", "pro", "ultra"], "core"),
+      reasoning: read<Reasoning>("reasoning", ["low", "medium", "high", "extra_high", "max"], "medium"),
+      speed: read<Speed>("speed", ["normal", "fast"], "normal"),
+    };
+  });
   const [chatMenu, setChatMenu] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -94,7 +107,8 @@ function Workspace({ user }: { user: { id: string; username: string } }) {
   const scroll = useRef<HTMLDivElement>(null);
   const messages = live?.id === chatId ? live.messages : chatQuery.data?.messages || [];
   const models = status?.models || [];
-  const model = selected || chatQuery.data?.model || settings.model || models[0]?.name || "";
+  const model = selected || (chatQuery.data?.model?.startsWith("forma:") ? "" : chatQuery.data?.model) || settings.model || models[0]?.name || "";
+  const sendModel = manualMode ? model : modeId(modeSelection);
   const current = chats.find(c => c.id === chatId);
   const [editingId, setEditingId] = useState<string | null>(null);
 
@@ -136,6 +150,12 @@ function Workspace({ user }: { user: { id: string; username: string } }) {
       setTheme(next);
     }
   }, [settings.theme, settingsQuery.data]);
+  useEffect(() => {
+    localStorage.setItem("forma.manualMode", String(manualMode));
+    localStorage.setItem("forma.level", modeSelection.level);
+    localStorage.setItem("forma.reasoning", modeSelection.reasoning);
+    localStorage.setItem("forma.speed", modeSelection.speed);
+  }, [manualMode, modeSelection]);
   useEffect(() => { document.documentElement.dataset.theme = theme; document.documentElement.classList.toggle("dark", theme === "dark"); }, [theme]);
   useEffect(() => {
     const media = matchMedia("(prefers-color-scheme: dark)");
@@ -172,7 +192,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
     try { await saveSettings({ ...settings, theme: next }); } catch { setNotice("Тема изменена, но не сохранена. Проверьте соединение."); }
   }
   async function chooseModel(name: string) {
-    setSelected(name); setModelMenu(false);
+    setSelected(name); setManualMode(true);
     try { await saveSettings({ ...settings, model: name }); } catch { setNotice("Модель выбрана только для текущего сеанса."); }
   }
   async function copy(text: string) {
@@ -191,7 +211,10 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
   async function send(retry = false) {
     if (busy || (!retry && !draft.trim() && !attachment)) return;
     if (!status?.connected) { setError("Сначала подключите Ollama. Ваш текст останется здесь."); openSettings(); return; }
-    if (!model || !models.some(m => m.name === model)) { setError("Выберите установленную модель во вкладке «Модели»."); setModelMenu(true); return; }
+    if (manualMode && (!model || !models.some(m => m.name === model))) { setError("Выберите установленную модель во вкладке «Модели»."); return; }
+    if (!manualMode && modesQuery.data && !modesQuery.data.available?.[modeSelection.level]?.[modeSelection.reasoning]?.[modeSelection.speed]) {
+      setError("Режим не настроен: укажите модель в config/modes.yaml на сервере Forma."); return;
+    }
     const content = `${draft.trim()}${attachment ? `\n\nФайл: ${attachment.name}\n\`\`\`\n${attachment.text}\n\`\`\`` : ""}`.trim();
     if (content.length > 100000) { setError("Сообщение вместе с файлом должно быть короче 100 000 символов."); return; }
     setError(""); setBusy(true);
@@ -203,7 +226,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
     let history = [...(chatQuery.data?.messages || [])];
     if (retry) { while (history.at(-1)?.role === "assistant") history.pop(); }
     else history.push({ id: "pending-user", role: "user", content });
-    let assistant: Message = { id: "stream-assistant", role: "assistant", content: "", model };
+    let assistant: Message = { id: "stream-assistant", role: "assistant", content: "", model: sendModel };
     const snapshot = () => [
       ...history,
       ...(assistant.content || assistant.thinking ? [{ ...assistant, interrupted: !serverComplete }] : []),
@@ -214,7 +237,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
     ] });
     try {
       if (!id) {
-        const res = await apiRequest("POST", "/api/chats", { title: draft.trim().slice(0, 65) || attachment?.name || "Новый диалог", model });
+        const res = await apiRequest("POST", "/api/chats", { title: draft.trim().slice(0, 65) || attachment?.name || "Новый диалог", model: sendModel });
         const created = await res.json(); id = created.id; navigate(`/chat/${id}`);
       }
       const activeId = id!;
@@ -222,7 +245,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
       // Never lose the typed message when a request fails before the stream begins.
       // The backend stores the user message before contacting Ollama.
       await queryClient.invalidateQueries({ queryKey: ["/api/chats"], exact: true });
-      const response = await apiRequest("POST", `/api/chats/${id}/send`, { content, model, retry }, aborter.signal);
+      const response = await apiRequest("POST", `/api/chats/${id}/send`, { content, model: sendModel, retry }, aborter.signal);
       await readStream(response, event => {
         if (event.type === "start") {
           started = true;
@@ -253,8 +276,8 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
           // history refresh fails or returns a stale/partial snapshot.
           const local = snapshot();
           queryClient.setQueryData<Chat>(key, previous => previous
-            ? { ...previous, messages: local, model }
-            : { id: id!, owner: user.id, title: draft.trim().slice(0, 65) || "Новый диалог", model, updatedAt: Date.now(), messages: local });
+            ? { ...previous, messages: local, model: sendModel }
+            : { id: id!, owner: user.id, title: draft.trim().slice(0, 65) || "Новый диалог", model: sendModel, updatedAt: Date.now(), messages: local });
         } else if (!retry && !started && !aborter.signal.aborted) {
           // The request may have failed before Ollama accepted the prompt.
           setDraft(content);
@@ -274,10 +297,18 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
       controller.current = null;
     }
   }
-  const picker = <Popover open={modelMenu} onOpenChange={setModelMenu}>
-    <PopoverTrigger asChild><button className="model-picker" disabled={busy} data-testid="button-model-picker"><Box size={16} /><span>{model || "Выбрать модель"}</span><ChevronDown size={14} /></button></PopoverTrigger>
-    <PopoverContent className="model-popover" align="start"><div className="popover-label">МОДЕЛИ OLLAMA</div>{models.length ? models.map(m => <button key={m.name} data-testid={`select-model-${m.name}`} className="model-option" onClick={() => chooseModel(m.name)}><Box size={17}/><span>{m.name}<small>{m.remote_host ? "Облачная модель" : `${m.details?.parameter_size || "Локальная модель"} · ${(m.size / 1e9).toFixed(1)} ГБ`}</small></span>{m.name === model && <Check size={16}/>}</button>) : <p className="popover-empty">Подключите Ollama и загрузите первую модель.</p>}<button className="popover-footer" data-testid="button-manage-models" onClick={() => { setModelMenu(false); navigate("/models"); }}><Plus size={16}/> Управление моделями<ArrowUpRight size={15}/></button></PopoverContent>
-  </Popover>;
+  const picker = <ModePicker
+    manual={manualMode}
+    selection={modeSelection}
+    available={modesQuery.data}
+    models={models}
+    manualModel={model}
+    disabled={busy}
+    onSelection={setModeSelection}
+    onPreset={() => setManualMode(false)}
+    onManual={chooseModel}
+    onManage={() => navigate("/models")}
+  />;
   const composer = <div className="composer-wrap">
     <div className={`composer ${busy ? "generating" : ""}`} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); attach(e.dataTransfer.files[0]); }}>
       {attachment && <div className="attachment" data-testid="text-attachment"><FileText size={15}/><span>{attachment.name}</span><IconButton label="Убрать файл" onClick={() => setAttachment(null)}><X size={14}/></IconButton></div>}
@@ -357,7 +388,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
                       <div className="assistant-heading">
                         <Logo />
                         <span>forma</span>
-                        <small>{m.model}</small>
+                        <small>{readableMode(m.model)}</small>
                       </div>
                     )}
 

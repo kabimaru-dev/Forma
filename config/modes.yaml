@@ -1,0 +1,80 @@
+# Forma: настоящие имена моделей задаются ТОЛЬКО здесь, на сервере.
+# После изменений файл перечитывается при следующей отправке.
+# Порядок: уровень -> reasoning -> speed -> модель Ollama.
+# Пример: medium / normal: "your-model:tag"
+# Пустые значения означают «не настроено».
+# Уровни Pro и Ultra отключены до будущего обновления.
+
+levels:
+  core:
+    enabled: true
+    models:
+      low:
+        normal: "ornith-1.5-35b-a3b-uncensored.q8_0_32k"
+        fast: ""
+      medium:
+        normal: "ornith-1.5-9b-uncensored-q8_0_32k:latest"
+        fast: ""
+      high:
+        normal: ""
+        fast: ""
+      extra_high:
+        normal: ""
+        fast: ""
+      max:
+        normal: ""
+        fast: ""
+  plus:
+    enabled: true
+    models:
+      low:
+        normal: "gemma-4-31b-it-the-deckard-heretic-uncensored-thinking.q8_0_32k:latest"
+        fast: ""
+      medium:
+        normal: "qwen3.8-27b-turbo-brilliance-50x-ri-neo-max-mtp-q8_0_32k:latest"
+        fast: ""
+      high:
+        normal: ""
+        fast: ""
+      extra_high:
+        normal: ""
+        fast: ""
+      max:
+        normal: ""
+        fast: ""
+  pro:
+    enabled: false
+    models:
+      low:
+        normal: ""
+        fast: ""
+      medium:
+        normal: ""
+        fast: ""
+      high:
+        normal: ""
+        fast: ""
+      extra_high:
+        normal: ""
+        fast: ""
+      max:
+        normal: ""
+        fast: ""
+  ultra:
+    enabled: false
+    models:
+      low:
+        normal: ""
+        fast: ""
+      medium:
+        normal: ""
+        fast: ""
+      high:
+        normal: ""
+        fast: ""
+      extra_high:
+        normal: ""
+        fast: ""
+      max:
+        normal: ""
+        fast: ""

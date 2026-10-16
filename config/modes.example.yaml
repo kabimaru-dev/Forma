@@ -1,0 +1,80 @@
+# Forma: настоящие имена моделей задаются ТОЛЬКО здесь, на сервере.
+# После изменений файл перечитывается при следующей отправке.
+# Порядок: уровень -> reasoning -> speed -> модель Ollama.
+# Пример: medium / normal: "your-model:tag"
+# Пустые значения означают «не настроено».
+# Уровни Pro и Ultra отключены до будущего обновления.
+
+levels:
+  core:
+    enabled: true
+    models:
+      low:
+        normal: ""
+        fast: ""
+      medium:
+        normal: ""
+        fast: ""
+      high:
+        normal: ""
+        fast: ""
+      extra_high:
+        normal: ""
+        fast: ""
+      max:
+        normal: ""
+        fast: ""
+  plus:
+    enabled: true
+    models:
+      low:
+        normal: ""
+        fast: ""
+      medium:
+        normal: ""
+        fast: ""
+      high:
+        normal: ""
+        fast: ""
+      extra_high:
+        normal: ""
+        fast: ""
+      max:
+        normal: ""
+        fast: ""
+  pro:
+    enabled: false
+    models:
+      low:
+        normal: ""
+        fast: ""
+      medium:
+        normal: ""
+        fast: ""
+      high:
+        normal: ""
+        fast: ""
+      extra_high:
+        normal: ""
+        fast: ""
+      max:
+        normal: ""
+        fast: ""
+  ultra:
+    enabled: false
+    models:
+      low:
+        normal: ""
+        fast: ""
+      medium:
+        normal: ""
+        fast: ""
+      high:
+        normal: ""
+        fast: ""
+      extra_high:
+        normal: ""
+        fast: ""
+      max:
+        normal: ""
+        fast: ""

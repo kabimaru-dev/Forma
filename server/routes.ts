@@ -7,6 +7,7 @@ import { sendSchema, settingsSchema, type Message } from "@shared/schema";
 import { checkOllama, normalizeOllamaUrl, ollamaUrl, previewMode, connectionError } from "./ollama";
 import { registerComputerRoutes } from "./computer";
 import { registerAuthRoutes, currentUser } from "./auth";
+import { isFormaMode, publicModes, resolveMode } from "./modes";
 
 const owner = (req: Request) => currentUser(req)!.id;
 const active = new Map<string, AbortController>();
@@ -47,6 +48,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (status.connected) storage.saveSettings(owner(req), { ...storage.settings(owner(req)), ollamaUrl: url });
       res.json({ ...status, saved: status.connected });
     } catch (error: any) { fail(res, error.message); }
+  });
+  app.get("/api/modes", (_req, res) => {
+    try { res.json(publicModes()); }
+    catch { fail(res, "Не удалось прочитать config/modes.yaml. Проверьте файл на сервере.", 500); }
   });
   app.get("/api/settings", (req, res) => res.json(storage.settings(owner(req))));
   app.put("/api/settings", (req, res) => {
@@ -107,6 +112,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!result.success || !modelSchema.safeParse(result.data?.model).success) return fail(res, "Выберите модель и проверьте сообщение.");
     if (active.has(id)) return fail(res, "Дождитесь завершения текущего ответа.", 409);
     const { content, model, retry } = result.data;
+    let upstreamModel = model;
+    if (isFormaMode(model)) {
+      try { upstreamModel = resolveMode(model); }
+      catch (error: any) { return fail(res, error?.message || "Режим не настроен.", 422); }
+    }
     let messages = [...chat.messages];
     if (retry) {
       while (messages.at(-1)?.role === "assistant") messages.pop();
@@ -151,7 +161,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         method: "POST", headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          model, stream: true,
+          model: upstreamModel, stream: true,
           messages: [
             ...(settings.system ? [{ role: "system", content: settings.system }] : []),
             ...messages.filter(m => m.content).map(({ role, content }) => ({ role, content })),
@@ -185,7 +195,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (error: any) {
       errorMessage = inactivityExpired ? "Ollama не присылала данные более пяти минут. Полученная часть сохранена."
         : controller.signal.aborted ? "Ответ остановлен. Полученная часть сохранена."
-        : connectionError(error, OLLAMA);
+        : isFormaMode(model)
+          ? "Ошибка режима Forma. Проверьте назначенную модель в config/modes.yaml и доступность Ollama."
+          : connectionError(error, OLLAMA);
     } finally {
       if (heartbeat) clearInterval(heartbeat);
       if (inactivity) clearTimeout(inactivity);

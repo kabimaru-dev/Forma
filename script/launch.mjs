@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync, copyFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 process.chdir(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
+if (!existsSync("config/modes.yaml") && existsSync("config/modes.example.yaml")) {
+  copyFileSync("config/modes.example.yaml", "config/modes.yaml");
+}
 if (Number(process.versions.node.split(".")[0]) < 22) { console.error("Forma requires Node.js 22+."); process.exit(1); }
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 async function run(args) {
