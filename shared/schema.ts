@@ -2,7 +2,7 @@ import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-export type Message = { id: string; role: "user" | "assistant"; content: string; model?: string; interrupted?: boolean };
+export type Message = { id: string; role: "user" | "assistant"; content: string; thinking?: string; model?: string; interrupted?: boolean };
 export const chats = sqliteTable("chats", {
   id: text("id").primaryKey(),
   owner: text("owner").notNull(),

@@ -12,7 +12,8 @@
     "doctor": "node script/doctor.mjs",
     "setup:computer": "playwright install chromium",
     "setup:computer:linux": "playwright install --with-deps chromium",
-    "test": "node --test tests/integration.test.mjs && tsx --test tests/computer.test.ts",
+    "test": "node --test tests/stream-route-contract.test.mjs && node --test tests/integration.test.mjs && tsx --test tests/computer.test.ts",
+    "test:stream": "node --test tests/stream-route-contract.test.mjs",
     "check": "tsc --incremental false",
     "db:push": "drizzle-kit push"
   },

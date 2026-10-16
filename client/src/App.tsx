@@ -197,34 +197,81 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
     setError(""); setBusy(true);
     let id = chatId;
     const aborter = new AbortController(); controller.current = aborter;
+    let started = false;
+    let finished = false;
+    let serverComplete = false;
+    let history = [...(chatQuery.data?.messages || [])];
+    if (retry) { while (history.at(-1)?.role === "assistant") history.pop(); }
+    else history.push({ id: "pending-user", role: "user", content });
+    let assistant: Message = { id: "stream-assistant", role: "assistant", content: "", model };
+    const snapshot = () => [
+      ...history,
+      ...(assistant.content || assistant.thinking ? [{ ...assistant, interrupted: !serverComplete }] : []),
+    ];
+    const showPartial = (activeId: string) => setLive({ id: activeId, messages: [
+      ...history,
+      { ...assistant, interrupted: false },
+    ] });
     try {
       if (!id) {
         const res = await apiRequest("POST", "/api/chats", { title: draft.trim().slice(0, 65) || attachment?.name || "Новый диалог", model });
         const created = await res.json(); id = created.id; navigate(`/chat/${id}`);
       }
       const activeId = id!;
-      let history = [...(chatQuery.data?.messages || [])];
-      if (retry) { while (history.at(-1)?.role === "assistant") history.pop(); }
-      else history.push({ id: "pending-user", role: "user", content });
-      const assistantId = "stream-assistant";
-      setLive({ id: activeId, messages: [...history, { id: assistantId, role: "assistant", content: "", model }] });
-      setDraft(""); setAttachment(null);
+      showPartial(activeId);
+      // Never lose the typed message when a request fails before the stream begins.
+      // The backend stores the user message before contacting Ollama.
       await queryClient.invalidateQueries({ queryKey: ["/api/chats"], exact: true });
       const response = await apiRequest("POST", `/api/chats/${id}/send`, { content, model, retry }, aborter.signal);
       await readStream(response, event => {
-        if (event.type === "token") setLive(prev => prev && ({ ...prev, messages: prev.messages.map(m => m.id === assistantId ? { ...m, content: m.content + event.content } : m) }));
+        if (event.type === "start") {
+          started = true;
+          if (Array.isArray(event.messages)) history = event.messages;
+          if (typeof event.assistantId === "string") assistant.id = event.assistantId;
+        }
+        if (event.type === "thinking" && typeof event.content === "string") {
+          assistant.thinking = (assistant.thinking || "") + event.content;
+        }
+        if (event.type === "token" && typeof event.content === "string") assistant.content += event.content;
         if (event.type === "error") setError(event.message);
+        if (event.type === "done") { finished = true; serverComplete = event.complete !== false; }
+        if (event.type === "start" || event.type === "token" || event.type === "thinking" || event.type === "done") showPartial(activeId);
       });
+      if (!finished) throw new Error("Соединение с моделью оборвалось. Полученная часть ответа сохранена.");
     } catch (e: any) {
       if (e.name !== "AbortError") setError(e.message || "Не удалось отправить сообщение.");
       else setNotice("Генерация остановлена");
+      serverComplete = false;
     } finally {
       if (aborter.signal.aborted && id) {
         try { await apiRequest("POST", `/api/chats/${id}/stop`, {}); } catch {}
       }
-      if (id) await queryClient.invalidateQueries({ queryKey: ["/api/chats", id] });
-      await queryClient.invalidateQueries({ queryKey: ["/api/chats"], exact: true });
-      setBusy(false); setLive(null); controller.current = null;
+      if (id) {
+        const key = ["/api/chats", id];
+        if (started || assistant.content || assistant.thinking) {
+          // Keep received text in the React Query cache even if the subsequent
+          // history refresh fails or returns a stale/partial snapshot.
+          const local = snapshot();
+          queryClient.setQueryData<Chat>(key, previous => previous
+            ? { ...previous, messages: local, model }
+            : { id: id!, owner: user.id, title: draft.trim().slice(0, 65) || "Новый диалог", model, updatedAt: Date.now(), messages: local });
+        } else if (!retry && !started && !aborter.signal.aborted) {
+          // The request may have failed before Ollama accepted the prompt.
+          setDraft(content);
+        }
+        try { await queryClient.invalidateQueries({ queryKey: key, exact: true }); } catch {}
+        try { await queryClient.invalidateQueries({ queryKey: ["/api/chats"], exact: true }); } catch {}
+      }
+      setBusy(false);
+      // A failed refresh must not make already received tokens disappear.
+      if (id && (assistant.content || assistant.thinking)) {
+        const cached = queryClient.getQueryData<Chat>(["/api/chats", id]);
+        const stored = cached?.messages.find(m => m.id === assistant.id);
+        if (!stored || stored.content.length < assistant.content.length || (stored.thinking?.length || 0) < (assistant.thinking?.length || 0)) {
+          setLive({ id, messages: snapshot() });
+        } else setLive(null);
+      } else setLive(null);
+      controller.current = null;
     }
   }
   const picker = <Popover open={modelMenu} onOpenChange={setModelMenu}>
@@ -315,6 +362,12 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
                     )}
 
                     <div className="message-body">
+                      {!isEditing && m.role === "assistant" && m.thinking && (
+                        <details className="reasoning-panel" open={busy && live?.id === chatId && !m.content ? true : undefined}>
+                          <summary>Ход рассуждений модели</summary>
+                          <pre>{m.thinking}</pre>
+                        </details>
+                      )}
                       {isEditing ? (
                         <form
                           className="message-edit-form"
@@ -337,6 +390,8 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
                         </form>
                       ) : m.content ? (
                         <Markdown text={m.content} copy={copy} />
+                      ) : m.thinking && !busy ? (
+                        <p className="reasoning-only">Окончательный ответ не получен. Сохранены рассуждения модели выше.</p>
                       ) : (
                         <div className="thinking">
                           <span />
@@ -348,7 +403,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
                     </div>
 
                     {m.interrupted && (
-                      <small className="interrupted">Ответ был остановлен</small>
+                      <small className="interrupted">Ответ прерван — полученная часть сохранена</small>
                     )}
 
                     <div className="message-actions">

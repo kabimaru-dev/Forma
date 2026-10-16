@@ -89,7 +89,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const chat = storage.get(owner(req), String(req.params.id));
     if (!chat) return fail(res, "Чат не найден.", 404);
     res.setHeader("Content-Disposition", `attachment; filename="forma-chat.md"; filename*=UTF-8''${encodeURIComponent(chat.title + ".md").replace(/'/g, "%27")}`);
-    res.type("text/markdown").send(`# ${chat.title}\n\n${chat.messages.map(m => `## ${m.role === "user" ? "Вы" : m.model || "Forma"}\n\n${m.content}${m.interrupted ? "\n\n[Ответ остановлен]" : ""}`).join("\n\n")}\n`);
+    res.type("text/markdown").send(`# ${chat.title}\n\n${chat.messages.map(m => `## ${m.role === "user" ? "Вы" : m.model || "Forma"}\n\n${m.content}${m.thinking ? `\n\n<details><summary>Ход рассуждений</summary>\n\n${m.thinking}\n\n</details>` : ""}${m.interrupted ? "\n\n[Ответ остановлен]" : ""}`).join("\n\n")}\n`);
   });
   app.post("/api/chats/:id/stop", async (req, res) => {
     const id = String(req.params.id);
@@ -121,7 +121,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.on("close", () => { if (!res.writableEnded) controller.abort(); });
     const assistant: Message = { id: randomUUID(), role: "assistant", content: "", model };
     let complete = false, errorMessage = "";
-    const timeout = setTimeout(() => controller.abort(), 15 * 60 * 1000);
+    let lastSave = Date.now();
+    // Save long-running streams periodically. A browser/network disconnect must
+    // not erase everything the model has already generated.
+    const persistPartial = () => {
+      if (!assistant.content && !assistant.thinking) return;
+      storage.update(who, id, { messages: [...messages, { ...assistant, interrupted: !complete }], model });
+      lastSave = Date.now();
+    };
+    const forward = (value: object) => {
+      if (!res.destroyed && !res.writableEnded) res.write(JSON.stringify(value) + "\n");
+    };
+    // Keep the browser and reverse proxies from treating long reasoning phases
+    // (or model load time) as an idle request.
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    // Only time out after 5 minutes without an upstream token. A fixed 15-minute
+    // wall-clock limit prematurely aborts legitimate long-running answers.
+    let inactivity: ReturnType<typeof setTimeout> | undefined;
+    let inactivityExpired = false;
+    const resetInactivity = () => {
+      if (inactivity) clearTimeout(inactivity);
+      inactivity = setTimeout(() => { inactivityExpired = true; controller.abort(); }, 5 * 60 * 1000);
+    };
+    // A model can take a while to load before responding; bound that phase too.
+    resetInactivity();
     try {
       const settings = storage.settings(who);
       const upstream = await fetch(`${OLLAMA}/api/chat`, {
@@ -141,29 +164,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         throw new Error(info.error || `Ollama вернула ошибку ${upstream.status}.`);
       }
       streamHeaders(res);
-      res.write(JSON.stringify({ type: "start", messages, assistantId: assistant.id }) + "\n");
+      forward({ type: "start", messages, assistantId: assistant.id });
+      heartbeat = setInterval(() => forward({ type: "heartbeat" }), 10000);
       await readLines(upstream, event => {
+        resetInactivity();
         if (event.error) throw new Error(event.error);
-        if (event.message?.content) {
+        if (typeof event.message?.thinking === "string" && event.message.thinking) {
+          assistant.thinking = (assistant.thinking || "") + event.message.thinking;
+          forward({ type: "thinking", content: event.message.thinking });
+        }
+        if (typeof event.message?.content === "string" && event.message.content) {
           assistant.content += event.message.content;
-          if (!res.destroyed) res.write(JSON.stringify({ type: "token", content: event.message.content }) + "\n");
+          forward({ type: "token", content: event.message.content });
         }
         if (event.done) complete = true;
+        if ((assistant.content || assistant.thinking) && Date.now() - lastSave >= 2000) persistPartial();
       });
-      if (!complete) throw new Error("Поток оборвался до завершения ответа. Попробуйте ещё раз.");
-      if (!assistant.content.trim()) throw new Error("Модель вернула пустой ответ. Попробуйте другую модель или измените запрос.");
+      if (!complete) throw new Error("Поток оборвался до завершения ответа. Полученная часть сохранена.");
+      if (!assistant.content.trim()) throw new Error("Модель не сформировала окончательный ответ. Её рассуждения сохранены в истории.");
     } catch (error: any) {
-      errorMessage = controller.signal.aborted ? "Ответ остановлен." : connectionError(error, OLLAMA);
+      errorMessage = inactivityExpired ? "Ollama не присылала данные более пяти минут. Полученная часть сохранена."
+        : controller.signal.aborted ? "Ответ остановлен. Полученная часть сохранена."
+        : connectionError(error, OLLAMA);
     } finally {
-      clearTimeout(timeout);
-      if (assistant.content) messages.push({ ...assistant, interrupted: !complete });
+      if (heartbeat) clearInterval(heartbeat);
+      if (inactivity) clearTimeout(inactivity);
+      // The data was kept even when the final response never arrived.
+      if (assistant.content || assistant.thinking) messages.push({ ...assistant, interrupted: !complete || !!errorMessage });
       storage.update(who, id, { messages, model });
       active.delete(id);
       if (!res.destroyed) {
         if (!res.headersSent && errorMessage) fail(res, errorMessage, 422);
         else {
-          if (errorMessage) res.write(JSON.stringify({ type: "error", message: errorMessage }) + "\n");
-          res.write(JSON.stringify({ type: "done" }) + "\n");
+          if (errorMessage) forward({ type: "error", message: errorMessage });
+          forward({ type: "done", complete: complete && !errorMessage });
           res.end();
         }
       }

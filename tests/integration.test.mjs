@@ -37,6 +37,24 @@ test("Full local package: Ollama connection, persistence, installed models, chat
     const json = JSON.parse(raw || "{}"); calls.push({ path: req.url, json });
     if (req.url === "/api/chat") {
       res.setHeader("Content-Type", "application/x-ndjson");
+      const prompt = String(json.messages.at(-1)?.content || "");
+      if (prompt.includes("TEST_THINKING_ONLY")) {
+        return res.end(JSON.stringify({ message: { thinking: "First thought. " }, done: false }) + "\n" + JSON.stringify({ message: { thinking: "Second thought." }, done: false }) + "\n" + JSON.stringify({ done: true }) + "\n");
+      }
+      if (prompt.includes("TEST_THINKING_ANSWER")) {
+        return res.end(JSON.stringify({ message: { thinking: "Let me analyze." }, done: false }) + "\n" + JSON.stringify({ message: { content: "Finished answer." }, done: false }) + "\n" + JSON.stringify({ done: true }) + "\n");
+      }
+      if (prompt.includes("TEST_BROKEN_STREAM")) {
+        res.write(JSON.stringify({ message: { thinking: "Partial reasoning" }, done: false }) + "\n");
+        res.write(JSON.stringify({ message: { content: "Partial answer" }, done: false }) + "\n");
+        return setTimeout(() => res.end(), 30);
+      }
+      if (prompt.includes("TEST_CANCEL_STREAM")) {
+        res.write(JSON.stringify({ message: { thinking: "Reasoning before cancellation" }, done: false }) + "\n");
+        const timer = setInterval(() => res.write(JSON.stringify({ message: { thinking: " still thinking" }, done: false }) + "\n"), 100);
+        res.on("close", () => clearInterval(timer));
+        return;
+      }
       return res.end(JSON.stringify({ message: { content: "Protocol fixture answer" }, done: false }) + "\n" + JSON.stringify({ message: { content: "" }, done: true }) + "\n");
     }
     if (req.url === "/api/pull") {
@@ -84,6 +102,58 @@ test("Full local package: Ollama connection, persistence, installed models, chat
       assert.equal(response.status,200); assert.match(await response.text(),/Protocol fixture answer/);
       assert.equal((await api(`/api/chats/${id}`)).json.messages.length,2);
       assert.equal(calls.find(x=>x.path==="/api/chat").json.messages.at(-1).content,"Do not log this secret");
+    });
+    await t.test("thinking chunks are streamed and preserved with the final answer", async () => {
+      const created = await api("/api/chats", { title: "Thinking answer", model: "existing-model:local" });
+      const chatId = created.json.id;
+      const response = await fetch(`${base}/api/chats/${chatId}/send`, { method: "POST", headers: { "Content-Type": "application/json", "X-Visitor-Id": "test-user" }, body: JSON.stringify({ content: "TEST_THINKING_ANSWER", model: "existing-model:local" }) });
+      const events = (await response.text()).trim().split("\n").map(JSON.parse);
+      assert.equal(events.find(x => x.type === "thinking")?.content, "Let me analyze.");
+      assert.equal(events.find(x => x.type === "token")?.content, "Finished answer.");
+      assert.equal(events.at(-1).type, "done");
+      assert.equal(events.at(-1).complete, true);
+      const saved = (await api(`/api/chats/${chatId}`)).json.messages.at(-1);
+      assert.equal(saved.thinking, "Let me analyze.");
+      assert.equal(saved.content, "Finished answer.");
+      assert.equal(saved.interrupted, undefined);
+    });
+    await t.test("reasoning-only answers are never silently discarded", async () => {
+      const created = await api("/api/chats", { title: "Reasoning only", model: "existing-model:local" });
+      const chatId = created.json.id;
+      const response = await fetch(`${base}/api/chats/${chatId}/send`, { method: "POST", headers: { "Content-Type": "application/json", "X-Visitor-Id": "test-user" }, body: JSON.stringify({ content: "TEST_THINKING_ONLY", model: "existing-model:local" }) });
+      const events = (await response.text()).trim().split("\n").map(JSON.parse);
+      assert.equal(events.filter(x => x.type === "thinking").map(x => x.content).join(""), "First thought. Second thought.");
+      assert.equal(events.find(x => x.type === "error")?.message.includes("рассуждения сохранены"), true);
+      assert.equal(events.at(-1).complete, false);
+      const saved = (await api(`/api/chats/${chatId}`)).json.messages;
+      assert.equal(saved.length, 2);
+      assert.equal(saved[1].thinking, "First thought. Second thought.");
+      assert.equal(saved[1].interrupted, true);
+    });
+    await t.test("unexpected upstream disconnect preserves received content and reasoning", async () => {
+      const created = await api("/api/chats", { title: "Interrupted upstream", model: "existing-model:local" });
+      const chatId = created.json.id;
+      const response = await fetch(`${base}/api/chats/${chatId}/send`, { method: "POST", headers: { "Content-Type": "application/json", "X-Visitor-Id": "test-user" }, body: JSON.stringify({ content: "TEST_BROKEN_STREAM", model: "existing-model:local" }) });
+      const events = (await response.text()).trim().split("\n").map(JSON.parse);
+      assert.equal(events.find(x => x.type === "token")?.content, "Partial answer");
+      assert.equal(events.at(-1).complete, false);
+      const saved = (await api(`/api/chats/${chatId}`)).json.messages.at(-1);
+      assert.equal(saved.content, "Partial answer");
+      assert.equal(saved.thinking, "Partial reasoning");
+      assert.equal(saved.interrupted, true);
+    });
+    await t.test("explicit stop preserves reasoning received before cancellation", async () => {
+      const created = await api("/api/chats", { title: "User stopped", model: "existing-model:local" });
+      const chatId = created.json.id;
+      const response = await fetch(`${base}/api/chats/${chatId}/send`, { method: "POST", headers: { "Content-Type": "application/json", "X-Visitor-Id": "test-user" }, body: JSON.stringify({ content: "TEST_CANCEL_STREAM", model: "existing-model:local" }) });
+      const reader = response.body.getReader();
+      const first = new TextDecoder().decode((await reader.read()).value);
+      assert.match(first, /start|thinking/);
+      assert.equal((await api(`/api/chats/${chatId}/stop`, {})).json.ok, true);
+      await reader.cancel().catch(() => {});
+      const saved = (await api(`/api/chats/${chatId}`)).json.messages.at(-1);
+      assert.match(saved.thinking, /Reasoning before cancellation/);
+      assert.equal(saved.interrupted, true);
     });
     await t.test("visitor isolation, export, unknown API and CORS", async () => {
       assert.equal((await api(`/api/chats/${id}`,undefined,"GET",{"X-Visitor-Id":"another-user"})).response.status,404);
