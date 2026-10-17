@@ -5,7 +5,7 @@ import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Plus, Search, Box, Settings2, ArrowUp, ArrowUpRight, ChevronDown, ChevronRight, PanelLeftClose, PanelLeft, Sun, Moon, CircleHelp, MessageSquare, SlidersHorizontal, Paperclip, X, FileText, Pencil, Code2, Lightbulb, GraduationCap, ArrowRight, Download, RefreshCw, Check, Copy, Trash2, Ellipsis, Monitor, Plug, Square, Loader2, ExternalLink, CheckCircle2, Circle, LockKeyhole, LogOut } from "lucide-react";
+import { Plus, Search, Settings2, ArrowUp, ArrowUpRight, ChevronDown, ChevronRight, PanelLeftClose, PanelLeft, Sun, Moon, CircleHelp, MessageSquare, SlidersHorizontal, Paperclip, X, FileText, Pencil, Code2, Lightbulb, GraduationCap, ArrowRight, Download, RefreshCw, Check, Copy, Trash2, Ellipsis, Monitor, Plug, Square, Loader2, ExternalLink, CheckCircle2, Circle, LockKeyhole, LogOut } from "lucide-react";
 import { Sidebar, SidebarProvider, SidebarContent, SidebarFooter, SidebarHeader, useSidebar } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -59,7 +59,6 @@ function Markdown({ text, copy }: { text: string; copy: (s: string) => void }) {
 function Workspace({ user }: { user: { id: string; username: string } }) {
   const [location, navigate] = useLocation();
   const chatId = location.startsWith("/chat/") ? location.split("/")[2] : null;
-  const isModels = location === "/models";
   const isComputer = location === "/computer";
   const { open, toggleSidebar, setOpenMobile, isMobile } = useSidebar();
   const settingsQuery = useQuery<Settings>({ queryKey: ["/api/settings"] });
@@ -69,7 +68,6 @@ function Workspace({ user }: { user: { id: string; username: string } }) {
   const chatsQuery = useQuery<ChatSummary[]>({ queryKey: ["/api/chats"] });
   const chats = chatsQuery.data || [];
   const chatQuery = useQuery<Chat>({ queryKey: ["/api/chats", chatId || ""], enabled: !!chatId });
-  const [selected, setSelected] = useState("");
   const [draft, setDraft] = useState("");
   const [attachment, setAttachment] = useState<{ name: string; text: string } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -78,16 +76,19 @@ function Workspace({ user }: { user: { id: string; username: string } }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState("");
   const modesQuery = useQuery<ModesPublic>({ queryKey: ["/api/modes"], staleTime: 5000, refetchInterval: 15000 });
-  const [manualMode, setManualMode] = useState(() => localStorage.getItem("forma.manualMode") === "true");
   const [modeSelection, setModeSelection] = useState<ModeSelection>(() => {
     const read = <T extends string>(key: string, options: readonly T[], fallback: T): T => {
       const item = localStorage.getItem(`forma.${key}`) as T | null;
       return item && options.includes(item) ? item : fallback;
     };
+    // Keep saved choices from earlier Forma versions without changing any chat data.
+    const previous: Record<string, Level> = { core: "minimal", plus: "moderate", pro: "intensive", ultra: "extreme" };
+    const storedLevel = localStorage.getItem("forma.level") || "";
     return {
-      level: read<Level>("level", ["core", "plus", "pro", "ultra"], "core"),
-      reasoning: read<Reasoning>("reasoning", ["low", "medium", "high", "extra_high", "max"], "medium"),
+      level: read<Level>("level", ["minimal", "moderate", "intensive", "extreme"], previous[storedLevel] || "moderate"),
+      reasoning: read<Reasoning>("reasoning", ["minimal", "low", "medium", "high", "extra_high", "max", "ultra"], "medium"),
       speed: read<Speed>("speed", ["normal", "fast"], "normal"),
+      model: read("mode-model", ["default", "model_02", "model_03", "model_04", "model_05", "model_06", "model_07"], "default"),
     };
   });
   const [chatMenu, setChatMenu] = useState<string | null>(null);
@@ -107,8 +108,8 @@ function Workspace({ user }: { user: { id: string; username: string } }) {
   const scroll = useRef<HTMLDivElement>(null);
   const messages = live?.id === chatId ? live.messages : chatQuery.data?.messages || [];
   const models = status?.models || [];
-  const model = selected || (chatQuery.data?.model?.startsWith("forma:") ? "" : chatQuery.data?.model) || settings.model || models[0]?.name || "";
-  const sendModel = manualMode ? model : modeId(modeSelection);
+  const model = (chatQuery.data?.model?.startsWith("forma:") ? "" : chatQuery.data?.model) || settings.model || models[0]?.name || "";
+  const sendModel = modeId(modeSelection);
   const current = chats.find(c => c.id === chatId);
   const [editingId, setEditingId] = useState<string | null>(null);
 
@@ -151,18 +152,19 @@ function Workspace({ user }: { user: { id: string; username: string } }) {
     }
   }, [settings.theme, settingsQuery.data]);
   useEffect(() => {
-    localStorage.setItem("forma.manualMode", String(manualMode));
+    localStorage.removeItem("forma.manualMode");
     localStorage.setItem("forma.level", modeSelection.level);
     localStorage.setItem("forma.reasoning", modeSelection.reasoning);
     localStorage.setItem("forma.speed", modeSelection.speed);
-  }, [manualMode, modeSelection]);
+    localStorage.setItem("forma.mode-model", modeSelection.model || "default");
+  }, [modeSelection]);
   useEffect(() => { document.documentElement.dataset.theme = theme; document.documentElement.classList.toggle("dark", theme === "dark"); }, [theme]);
   useEffect(() => {
     const media = matchMedia("(prefers-color-scheme: dark)");
     const update = () => { if (settings.theme === "system") setTheme(media.matches ? "dark" : "light"); };
     media.addEventListener("change", update); return () => media.removeEventListener("change", update);
   }, [settings.theme]);
-  useEffect(() => { setError(""); setSelected(""); setDraft(""); setAttachment(null); setOpenMobile(false); }, [location]);
+  useEffect(() => { setError(""); setDraft(""); setAttachment(null); setOpenMobile(false); }, [location]);
   useEffect(() => {
     if (scroll.current) scroll.current.scrollTo({ top: scroll.current.scrollHeight, behavior: busy ? "instant" : "smooth" });
   }, [messages.length, messages.at(-1)?.content, busy]);
@@ -180,7 +182,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
     try { await apiRequest("POST", "/api/auth/logout"); } catch {}
     queryClient.removeQueries({ predicate: q => q.queryKey[0] !== "/api/auth/me" });
     queryClient.setQueryData(["/api/auth/me"], { user: null });
-    location.hash = "#/";
+    window.location.hash = "#/";
   }
   function openSettings(tab = "connection") { setSettingsTab(tab); setSettingsOpen(true); }
   async function saveSettings(next: Settings) {
@@ -190,10 +192,6 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
   async function changeTheme() {
     const next = theme === "light" ? "dark" : "light"; setTheme(next);
     try { await saveSettings({ ...settings, theme: next }); } catch { setNotice("Тема изменена, но не сохранена. Проверьте соединение."); }
-  }
-  async function chooseModel(name: string) {
-    setSelected(name); setManualMode(true);
-    try { await saveSettings({ ...settings, model: name }); } catch { setNotice("Модель выбрана только для текущего сеанса."); }
   }
   async function copy(text: string) {
     try { await navigator.clipboard.writeText(text); setNotice("Скопировано"); }
@@ -211,8 +209,9 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
   async function send(retry = false) {
     if (busy || (!retry && !draft.trim() && !attachment)) return;
     if (!status?.connected) { setError("Сначала подключите Ollama. Ваш текст останется здесь."); openSettings(); return; }
-    if (manualMode && (!model || !models.some(m => m.name === model))) { setError("Выберите установленную модель во вкладке «Модели»."); return; }
-    if (!manualMode && modesQuery.data && !modesQuery.data.available?.[modeSelection.level]?.[modeSelection.reasoning]?.[modeSelection.speed]) {
+    if (modesQuery.data && (modeSelection.model && modeSelection.model !== "default"
+      ? !modesQuery.data.modelChoices?.[modeSelection.model]?.enabled || !modesQuery.data.levels[modeSelection.level] || !modesQuery.data.reasoning[modeSelection.level][modeSelection.reasoning] || !modesQuery.data.speed[modeSelection.speed]
+      : !modesQuery.data.available?.[modeSelection.level]?.[modeSelection.reasoning]?.[modeSelection.speed])) {
       setError("Режим не настроен: укажите модель в config/modes.yaml на сервере Forma."); return;
     }
     const content = `${draft.trim()}${attachment ? `\n\nФайл: ${attachment.name}\n\`\`\`\n${attachment.text}\n\`\`\`` : ""}`.trim();
@@ -298,22 +297,17 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
     }
   }
   const picker = <ModePicker
-    manual={manualMode}
+    disabled={busy}
     selection={modeSelection}
     available={modesQuery.data}
-    models={models}
-    manualModel={model}
-    disabled={busy}
     onSelection={setModeSelection}
-    onPreset={() => setManualMode(false)}
-    onManual={chooseModel}
-    onManage={() => navigate("/models")}
+    onOpenSettings={() => openSettings("generation")}
   />;
   const composer = <div className="composer-wrap">
     <div className={`composer ${busy ? "generating" : ""}`} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); attach(e.dataTransfer.files[0]); }}>
       {attachment && <div className="attachment" data-testid="text-attachment"><FileText size={15}/><span>{attachment.name}</span><IconButton label="Убрать файл" onClick={() => setAttachment(null)}><X size={14}/></IconButton></div>}
       <textarea ref={textarea} aria-label="Сообщение" data-testid="input-message" value={draft} onChange={e => { setDraft(e.target.value); e.target.style.height = "auto"; e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`; }} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} placeholder="Спросите о чём угодно или поделитесь идеей…" rows={2}/>
-      <div className="composer-tools"><div className="flex items-center gap-1"><IconButton label="Прикрепить текстовый файл" testid="button-attach" onClick={() => fileInput.current?.click()} disabled={busy}><Paperclip size={19}/></IconButton><span className="tool-separator"/>{picker}</div><div className="flex items-center gap-2"><IconButton label="Параметры ответа" testid="button-generation-settings" onClick={() => openSettings("generation")}><SlidersHorizontal size={18}/></IconButton>{busy ? <button className="send-button stop" aria-label="Остановить ответ" data-testid="button-stop" onClick={() => controller.current?.abort()}><Square size={17} fill="currentColor"/></button> : <button className="send-button" aria-label="Отправить сообщение" data-testid="button-send" disabled={!draft.trim() && !attachment} onClick={() => send()}><ArrowUp size={21}/></button>}</div></div>
+      <div className="composer-tools"><div className="flex items-center gap-1"><IconButton label="Прикрепить текстовый файл" testid="button-attach" onClick={() => fileInput.current?.click()} disabled={busy}><Paperclip size={19}/></IconButton></div><div className="flex items-center gap-2">{picker}{busy ? <button className="send-button stop" aria-label="Остановить ответ" data-testid="button-stop" onClick={() => controller.current?.abort()}><Square size={17} fill="currentColor"/></button> : <button className="send-button" aria-label="Отправить сообщение" data-testid="button-send" disabled={!draft.trim() && !attachment} onClick={() => send()}><ArrowUp size={21}/></button>}</div></div>
     </div>
     <input ref={fileInput} type="file" className="hidden" aria-label="Текстовый файл" data-testid="input-file" accept=".txt,.md,.csv,.json,.js,.ts,.tsx,.jsx,.py,.html,.css,.yml,.yaml,.log" onChange={e => attach(e.target.files?.[0])}/>
     {error && <div className="inline-error" role="alert" data-testid="error-chat">{error}<IconButton label="Скрыть ошибку" onClick={() => setError("")}><X size={14}/></IconButton></div>}
@@ -327,7 +321,6 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
         <button className="new-chat" data-testid="button-new-chat" onClick={newChat}><Plus size={18}/><span>Новый чат</span><kbd>⌘ ⇧ O</kbd></button>
         <nav className="main-nav" aria-label="Главное меню">
           <button data-testid="button-search" onClick={() => setSearchOpen(true)}><Search size={18}/><span>Поиск чатов</span><kbd>⌘ K</kbd></button>
-          <button className={isModels ? "active" : ""} data-testid="button-models" onClick={() => navigate("/models")}><Box size={18}/><span>Модели</span><ArrowUpRight className="nav-arrow" size={15}/></button>
           <button className={isComputer ? "active" : ""} data-testid="button-computer" onClick={() => goTo("/computer")}><Monitor size={18}/><span>Computer</span><span className="nav-beta">beta</span></button>
         </nav>
         <div className="history-heading">Ваши диалоги <span>{chats.length > 0 && chats.length}</span></div>
@@ -349,8 +342,8 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
       </SidebarFooter>
     </Sidebar>
     <main className="main-panel">
-      <header className="topbar"><div className="topbar-left">{(!open || isMobile) && <IconButton label="Открыть меню" testid="button-open-sidebar" onClick={toggleSidebar}><PanelLeft size={19}/></IconButton>}<span className="page-breadcrumb">Личное пространство</span><ChevronRight className="breadcrumb-chevron" size={13}/><span className="page-name">{isComputer ? "Computer" : isModels ? "Модели" : current?.title || "Новый диалог"}</span></div><div className="topbar-right"><button className={`connection-status ${status?.connected ? "online" : ""}`} data-testid="status-connection" onClick={() => openSettings()}><span className="status-dot"/><span>{statusQuery.isFetching && !status ? "Проверяем Ollama" : status?.backend === false ? "Сервер Forma недоступен" : status?.connected ? "Ollama подключена" : "Ollama не подключена"}</span></button><span className="topbar-divider"/><IconButton label={theme === "light" ? "Тёмная тема" : "Светлая тема"} testid="button-theme" onClick={changeTheme}>{theme === "light" ? <Moon size={18}/> : <Sun size={18}/>}</IconButton></div></header>
-      {isComputer ? <Computer models={models} model={model} connected={!!status?.connected} connect={() => openSettings()}/> : isModels ? <ModelsView status={status} refreshing={statusQuery.isFetching} refresh={() => statusQuery.refetch()} select={name => { chooseModel(name); navigate("/"); }} connect={() => openSettings()} /> : chatId ? <>
+      <header className="topbar"><div className="topbar-left">{(!open || isMobile) && <IconButton label="Открыть меню" testid="button-open-sidebar" onClick={toggleSidebar}><PanelLeft size={19}/></IconButton>}<span className="page-breadcrumb">Личное пространство</span><ChevronRight className="breadcrumb-chevron" size={13}/><span className="page-name">{isComputer ? "Computer" : current?.title || "Новый диалог"}</span></div><div className="topbar-right"><button className={`connection-status ${status?.connected ? "online" : ""}`} data-testid="status-connection" onClick={() => openSettings()}><span className="status-dot"/><span>{statusQuery.isFetching && !status ? "Проверяем Ollama" : status?.backend === false ? "Сервер Forma недоступен" : status?.connected ? "Ollama подключена" : "Ollama не подключена"}</span></button><span className="topbar-divider"/><IconButton label={theme === "light" ? "Тёмная тема" : "Светлая тема"} testid="button-theme" onClick={changeTheme}>{theme === "light" ? <Moon size={18}/> : <Sun size={18}/>}</IconButton></div></header>
+      {isComputer ? <Computer models={models} model={model} connected={!!status?.connected} connect={() => openSettings()}/> : chatId ? <>
         <div className="conversation-scroll" ref={scroll}>
           <div className="messages">
             {chatQuery.isLoading && !live ? (
@@ -499,8 +492,8 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
         <footer className="welcome-footer"><span>Работает с <strong>Ollama</strong></span><span className="footer-dot">·</span><span>Больше пространства для мысли</span></footer>
       </div>}
     </main>
-    <SettingsDialog open={settingsOpen} setOpen={setSettingsOpen} tab={settingsTab} setTab={setSettingsTab} settings={settings} save={saveSettings} status={status} refreshing={statusQuery.isFetching} refresh={() => statusQuery.refetch()} models={() => { setSettingsOpen(false); navigate("/models"); }} />
-    <Dialog open={helpOpen} onOpenChange={setHelpOpen}><DialogContent className="app-dialog help-dialog"><DialogHeader><DialogTitle>Знакомьтесь, Forma</DialogTitle><DialogDescription>Знакомый чат. Модели, которые выбираете вы.</DialogDescription></DialogHeader><div className="help-content"><div className="help-step"><span>01</span><div><h3>Запустите Ollama</h3><p>Установите Ollama на свой компьютер и откройте приложение. Сервер Forma должен работать на том же компьютере или иметь доступ к вашей Ollama.</p><a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer" data-testid="link-ollama-download">Скачать Ollama<ExternalLink size={14}/></a></div></div><div className="help-step"><span>02</span><div><h3>Добавьте свою модель</h3><p>Откройте «Модели», вставьте имя из библиотеки Ollama и нажмите «Загрузить». Файлы загрузятся на компьютер с Ollama.</p></div></div><div className="help-step"><span>03</span><div><h3>Начните разговор</h3><p>Выберите модель, напишите сообщение или прикрепите текстовый файл. История сохраняется в базе на сервере Forma.</p></div></div><div className="shortcuts"><span>Отправить <kbd>Enter</kbd></span><span>Новая строка <kbd>Shift + Enter</kbd></span><span>Поиск <kbd>Ctrl / ⌘ K</kbd></span></div></div></DialogContent></Dialog>
+    <SettingsDialog open={settingsOpen} setOpen={setSettingsOpen} tab={settingsTab} setTab={setSettingsTab} settings={settings} save={saveSettings} status={status} refreshing={statusQuery.isFetching} refresh={() => statusQuery.refetch()} />
+    <Dialog open={helpOpen} onOpenChange={setHelpOpen}><DialogContent className="app-dialog help-dialog"><DialogHeader><DialogTitle>Знакомьтесь, Forma</DialogTitle><DialogDescription>Знакомый чат. Модели, которые выбираете вы.</DialogDescription></DialogHeader><div className="help-content"><div className="help-step"><span>01</span><div><h3>Запустите Ollama</h3><p>Установите Ollama на свой компьютер и откройте приложение. Сервер Forma должен работать на том же компьютере или иметь доступ к вашей Ollama.</p><a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer" data-testid="link-ollama-download">Скачать Ollama<ExternalLink size={14}/></a></div></div><div className="help-step"><span>02</span><div><h3>Добавьте свою модель</h3><p>Установите модели через Ollama на своём компьютере и задайте их в config/modes.yaml на сервере Forma.</p></div></div><div className="help-step"><span>03</span><div><h3>Начните разговор</h3><p>Выберите уровень Forma, напишите сообщение или прикрепите текстовый файл. История сохраняется в базе на сервере Forma.</p></div></div><div className="shortcuts"><span>Отправить <kbd>Enter</kbd></span><span>Новая строка <kbd>Shift + Enter</kbd></span><span>Поиск <kbd>Ctrl / ⌘ K</kbd></span></div></div></DialogContent></Dialog>
     <Dialog open={searchOpen} onOpenChange={setSearchOpen}><DialogContent className="app-dialog search-dialog"><DialogHeader><DialogTitle>Найти диалог</DialogTitle><DialogDescription>По названию или тексту сообщений</DialogDescription></DialogHeader><div className="search-input"><Search size={19}/><input autoFocus aria-label="Поиск диалогов" placeholder="О чём мы говорили?" data-testid="input-search" value={search} onChange={e => setSearch(e.target.value)}/></div><div className="search-results">{chats.filter(c => `${c.title} ${c.preview}`.toLowerCase().includes(search.toLowerCase())).map(c => <button key={c.id} data-testid={`search-result-${c.id}`} onClick={() => { navigate(`/chat/${c.id}`); setSearchOpen(false); }}><MessageSquare size={18}/><span>{c.title}<small>{c.preview.slice(0, 85) || "Пока без сообщений"}</small></span><ArrowUpRight size={16}/></button>)}{!chats.filter(c => `${c.title} ${c.preview}`.toLowerCase().includes(search.toLowerCase())).length && <div className="search-empty"><Search size={25}/><p>{search ? "Такого диалога пока нет" : "Ваши диалоги появятся здесь"}</p><small>{search ? "Попробуйте другое слово." : "Начните новый чат, и мы сохраним его для вас."}</small></div>}</div></DialogContent></Dialog>
     <Dialog open={!!rename} onOpenChange={v => { if (!v) setRename(null); }}><DialogContent className="app-dialog compact-dialog"><DialogHeader><DialogTitle>Название диалога</DialogTitle><DialogDescription>Так его будет проще найти в истории.</DialogDescription></DialogHeader><input className="text-input" aria-label="Название" value={renameText} onChange={e => setRenameText(e.target.value)} data-testid="input-rename" maxLength={120}/>{modalError && <p className="inline-error" role="alert">{modalError}</p>}<button className="primary-button" data-testid="button-save-rename" disabled={!renameText.trim() || operation} onClick={async () => { setOperation(true); try { await apiRequest("PATCH", `/api/chats/${rename!.id}`, { title: renameText }); await queryClient.invalidateQueries({ queryKey: ["/api/chats"] }); setRename(null); } catch(e: any) { setModalError(e.message); } finally { setOperation(false); } }}>Сохранить</button></DialogContent></Dialog>
     <Dialog open={!!deleteChat} onOpenChange={v => { if (!v) setDeleteChat(null); }}><DialogContent className="app-dialog compact-dialog"><DialogHeader><DialogTitle>Удалить диалог?</DialogTitle><DialogDescription>«{deleteChat?.title}» и все его сообщения будут удалены без возможности восстановления.</DialogDescription></DialogHeader>{modalError && <p role="alert" className="inline-error">{modalError}</p>}<div className="dialog-actions"><button className="secondary-button" data-testid="button-cancel-delete" onClick={() => setDeleteChat(null)}>Оставить</button><button className="primary-button danger" data-testid="button-confirm-delete" disabled={operation} onClick={async () => { setOperation(true); try { await apiRequest("DELETE", `/api/chats/${deleteChat!.id}`); if (chatId === deleteChat!.id) newChat(); await queryClient.invalidateQueries({ queryKey: ["/api/chats"] }); setDeleteChat(null); } catch(e: any) { setModalError(e.message); } finally { setOperation(false); } }}>Удалить диалог</button></div></DialogContent></Dialog>
@@ -508,7 +501,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
   </div>;
 }
 
-function SettingsDialog({ open, setOpen, tab, setTab, settings, save, status, refreshing, refresh, models }: { open: boolean; setOpen: (v: boolean) => void; tab: string; setTab: (v: string) => void; settings: Settings; save: (s: Settings) => Promise<void>; status?: Status; refreshing: boolean; refresh: () => void; models: () => void }) {
+function SettingsDialog({ open, setOpen, tab, setTab, settings, save, status, refreshing, refresh }: { open: boolean; setOpen: (v: boolean) => void; tab: string; setTab: (v: string) => void; settings: Settings; save: (s: Settings) => Promise<void>; status?: Status; refreshing: boolean; refresh: () => void }) {
   const form = useForm<Settings>({ defaultValues: settings });
   const [saved, setSaved] = useState(false), [error, setError] = useState("");
   const [host, setHost] = useState(""), [checking, setChecking] = useState(false), [connection, setConnection] = useState<Status | null>(null);
@@ -540,7 +533,6 @@ function SettingsDialog({ open, setOpen, tab, setTab, settings, save, status, re
       
       
       <div className="dialog-actions"><button className="secondary-button" data-testid="button-refresh-backend" disabled={refreshing} onClick={refresh}><RefreshCw size={15}/>Обновить статус</button><button className="primary-button" data-testid="button-check-connection" disabled={checking} onClick={checkConnection}>{checking ? <Loader2 className="spin" size={16}/> : <Plug size={16}/>}Проверить и сохранить</button></div>
-      {shown?.connected && <button className="connection-models-link" data-testid="button-connected-models" onClick={models}>Открыть установленные модели<ArrowRight size={15}/></button>}
     </div> :
     <Form {...form}><form onSubmit={form.handleSubmit(async values => { try { setError(""); await save(values); setSaved(true); } catch (e: any) { setError(e.message); } })} className="settings-form">
       {tab === "generation" ? <><div className="field"><label htmlFor="temperature">Творческий подход <span>{Number(form.watch("temperature")).toFixed(1)}</span></label><input id="temperature" data-testid="input-temperature" type="range" min="0" max="2" step="0.1" {...form.register("temperature", { valueAsNumber: true })}/><div className="range-labels"><span>Точнее</span><span>Креативнее</span></div></div><div className="field"><label htmlFor="context">Размер контекста</label><select id="context" className="text-input" data-testid="select-context" {...form.register("context", { valueAsNumber: true })}>{[2048, 4096, 8192, 16384, 32768].map(n => <option key={n} value={n}>{n.toLocaleString("ru")} токенов</option>)}</select><p className="field-hint">Большой контекст требует больше оперативной памяти. Фактический предел зависит от модели.</p></div><div className="field"><label htmlFor="system">Инструкция для ассистента</label><textarea id="system" data-testid="input-system" rows={4} className="text-input" maxLength={12000} {...form.register("system")}/><p className="field-hint">Тон общения, язык и правила для всех новых ответов.</p></div></> : <div className="appearance-options">{[["light", "Светлая", Sun], ["dark", "Тёмная", Moon], ["system", "Как в системе", Monitor]].map(([id, label, Icon]: any) => <button type="button" key={id} data-testid={`theme-${id}`} className={`theme-option ${form.watch("theme") === id ? "chosen" : ""}`} onClick={() => { form.setValue("theme", id); setSaved(false); }}><div className={`theme-preview ${id}`}><div/><section><span/><span/><span/></section></div><div><Icon size={16}/>{label}{form.watch("theme") === id && <Check size={16}/>}</div></button>)}</div>}
@@ -549,43 +541,6 @@ function SettingsDialog({ open, setOpen, tab, setTab, settings, save, status, re
   </DialogContent></Dialog>;
 }
 
-function ModelsView({ status, refresh, refreshing, select, connect }: { status?: Status; refresh: () => void; refreshing: boolean; select: (name: string) => void; connect: () => void }) {
-  const [name, setName] = useState("");
-  const [pulling, setPulling] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [pullStatus, setPullStatus] = useState("");
-  const [error, setError] = useState("");
-  const [done, setDone] = useState(false);
-  const abort = useRef<AbortController | null>(null);
-  useEffect(() => () => abort.current?.abort(), []);
-  async function pull() {
-    if (!name.trim() || pulling) return;
-    if (!status?.connected) { setError("Сначала подключите Ollama, затем запустите загрузку."); return; }
-    setPulling(true); setError(""); setDone(false); setProgress(0); setPullStatus("Подключаемся к библиотеке…");
-    const controller = new AbortController(); abort.current = controller;
-    let success = false;
-    try {
-      const response = await apiRequest("POST", "/api/models/pull", { model: name.trim() }, controller.signal);
-      await readStream(response, event => {
-        if (event.error) throw new Error(event.error);
-        if (event.total && event.completed !== undefined) setProgress(Math.round(event.completed / event.total * 100));
-        setPullStatus(event.status === "success" ? "Модель готова к работе" : event.total ? "Загружаем файлы модели" : event.status || "Подготовка модели");
-        if (event.status === "success") { success = true; setDone(true); setProgress(100); }
-      });
-      if (!success) throw new Error("Загрузка прервалась. Попробуйте снова: Ollama использует уже скачанные файлы.");
-      refresh();
-    } catch(e: any) { setError(e.name === "AbortError" ? "Ожидание отменено. Проверьте список моделей перед повторной загрузкой." : e.message); }
-    finally { setPulling(false); abort.current = null; }
-  }
-  return <div className="models-page"><div className="models-heading"><div className="eyebrow">ВАШ ЛИЧНЫЙ НАБОР AI</div><div className="section-title"><h1>Модели</h1><button className="secondary-button" data-testid="button-refresh-models" disabled={refreshing} onClick={refresh}><RefreshCw className={refreshing ? "spin" : ""} size={16}/>Обновить</button></div><p>Выберите, с кем вы хотите поговорить.</p></div>
-    {!status?.connected && <div className="connection-banner"><Plug size={20}/><div><strong>Нужна связь с Ollama</strong><p>Подключите сервер, чтобы увидеть и загрузить модели.</p></div><button data-testid="button-models-connect" onClick={connect}>Подключить<ArrowRight size={15}/></button></div>}
-    <section className="install-section"><div className="install-heading"><Download size={21}/><div><h2>Добавить модель</h2><p>Вставьте имя модели из библиотеки Ollama.</p></div><a href="https://ollama.com/library" data-testid="link-model-library" target="_blank" rel="noopener noreferrer">Открыть библиотеку<ArrowUpRight size={15}/></a></div><div className="install-input-row"><input aria-label="Имя модели" className="text-input" placeholder="имя-модели:тег" data-testid="input-model-name" value={name} disabled={pulling} onChange={e => { setName(e.target.value); setDone(false); }} onKeyDown={e => { if (e.key === "Enter") pull(); }}/>{pulling ? <button className="secondary-button" data-testid="button-cancel-pull" onClick={() => abort.current?.abort()}><Square size={15}/>Отменить</button> : <button className="primary-button" data-testid="button-pull-model" onClick={pull} disabled={!name.trim()}><Download size={16}/>Загрузить</button>}</div><p className="field-hint">Файлы сохранятся на компьютере с Ollama. Размер и требования к памяти зависят от выбранной модели.</p>{(pulling || done) && <div className="download-progress" role="status" data-testid="status-pull"><div><span>{pullStatus}</span><span>{progress}%</span></div><progress value={progress} max={100}/></div>}{error && <p className="inline-error" role="alert" data-testid="error-pull">{error}</p>}</section>
-    <div className="models-list-heading"><h2>Установленные модели</h2><span>{status?.models.length || 0}</span></div>
-    {status?.connected && <p className="existing-models-hint">Модели уже установлены в вашей Ollama. Нажмите «Начать чат» без повторной загрузки.</p>}
-    {status?.models.length ? <div className="model-list">{status.models.map(m => <article className="model-card" key={m.name}><div className="model-symbol"><Box size={24}/></div><div><h3>{m.name}</h3><p>{m.remote_host ? "Облачная модель" : `${(m.size / 1e9).toFixed(1)} ГБ`}{m.details?.parameter_size && ` · ${m.details.parameter_size}`}{m.details?.quantization_level && ` · ${m.details.quantization_level}`}</p></div><button className="secondary-button" data-testid={`button-use-${m.name}`} onClick={() => select(m.name)}>Начать чат<ArrowRight size={15}/></button></article>)}</div> : <div className="models-empty"><Box size={34} strokeWidth={1.3}/><h3>Место для вашей первой модели</h3><p>После загрузки она появится здесь.<br/>Вы сможете выбирать её в любом диалоге.</p></div>}
-    <div className="model-footnote"><LockKeyhole size={16}/><p>Локальные модели работают на вашем оборудовании. Облачные модели Ollama обрабатывают запросы на стороне провайдера.</p></div>
-  </div>;
-}
 function AuthScreen() {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [username, setUsername] = useState("");

@@ -1,80 +1,187 @@
-# Forma: настоящие имена моделей задаются ТОЛЬКО здесь, на сервере.
-# После изменений файл перечитывается при следующей отправке.
-# Порядок: уровень -> reasoning -> speed -> модель Ollama.
-# Пример: medium / normal: "your-model:tag"
-# Пустые значения означают «не настроено».
-# Уровни Pro и Ultra отключены до будущего обновления.
+# Forma — настройка новой кнопки. Меняйте enabled: true / false и подписи.
+# Имена моделей нигде в интерфейсе не показываются.
+# Reasoning: 7 переключателей внутри КАЖДОГО уровня. Speed: 2 варианта.
+# Каждый enabled переключается независимо. Сервер проверяет блокировки при отправке.
+# Пустая модель = режим виден, но отправка недоступна до заполнения.
+# Файл перечитывается при следующем запросе.
 
+speed:
+  normal:
+    enabled: true
+  fast:
+    enabled: false
+
+custom:
+  enabled: false # кнопка «Custom» пока заблокирована
+  options:
+    option_1:
+      enabled: false
+      label: "Скоро 1"
+    option_2:
+      enabled: false
+      label: "Скоро 2"
+    option_3:
+      enabled: false
+      label: "Скоро 3"
+    option_4:
+      enabled: false
+      label: "Скоро 4"
+    option_5:
+      enabled: false
+      label: "Скоро 5"
+
+# Под каждым уровнем 7 НЕЗАВИСИМЫХ Thinking Effort (minimal/low/medium/high/extra_high/max/ultra).
+# Отключение, например, minimal/models/high/enabled не блокирует moderate/models/high.
 levels:
-  core:
+  minimal:
     enabled: true
     models:
+      minimal:
+        enabled: false
+        normal: ""
+        fast: ""
+      ultra:
+        enabled: false
+        normal: ""
+        fast: ""
       low:
-        normal: "ornith-1.5-35b-a3b-uncensored.q8_0_32k"
+        enabled: true
+        normal: "ornith-1.5-35b-a3b-uncensored.q8_0_32k:latest"
         fast: ""
       medium:
+        enabled: true
         normal: "ornith-1.5-9b-uncensored-q8_0_32k:latest"
         fast: ""
       high:
+        enabled: false
         normal: ""
         fast: ""
       extra_high:
+        enabled: false
         normal: ""
         fast: ""
       max:
+        enabled: false
         normal: ""
         fast: ""
-  plus:
+  moderate:
     enabled: true
     models:
+      minimal:
+        enabled: false
+        normal: ""
+        fast: ""
+      ultra:
+        enabled: false
+        normal: ""
+        fast: ""
       low:
+        enabled: true
         normal: "gemma-4-31b-it-the-deckard-heretic-uncensored-thinking.q8_0_32k:latest"
         fast: ""
       medium:
+        enabled: true
         normal: "qwen3.8-27b-turbo-brilliance-50x-ri-neo-max-mtp-q8_0_32k:latest"
         fast: ""
       high:
+        enabled: false
         normal: ""
         fast: ""
       extra_high:
+        enabled: false
         normal: ""
         fast: ""
       max:
+        enabled: false
         normal: ""
         fast: ""
-  pro:
-    enabled: false
+  intensive:
+    enabled: true
     models:
+      minimal:
+        enabled: false
+        normal: ""
+        fast: ""
+      ultra:
+        enabled: false
+        normal: ""
+        fast: ""
       low:
+        enabled: false
         normal: ""
         fast: ""
       medium:
+        enabled: false
         normal: ""
         fast: ""
       high:
+        enabled: false
         normal: ""
         fast: ""
       extra_high:
+        enabled: false
         normal: ""
         fast: ""
       max:
+        enabled: false
         normal: ""
         fast: ""
-  ultra:
-    enabled: false
+  extreme:
+    enabled: true
     models:
+      minimal:
+        enabled: false
+        normal: ""
+        fast: ""
+      ultra:
+        enabled: false
+        normal: ""
+        fast: ""
       low:
+        enabled: false
         normal: ""
         fast: ""
       medium:
+        enabled: false
         normal: ""
         fast: ""
       high:
+        enabled: false
         normal: ""
         fast: ""
       extra_high:
+        enabled: false
         normal: ""
         fast: ""
       max:
+        enabled: false
         normal: ""
         fast: ""
+
+# v5: публичные псевдонимы Model; default (Anime-Sakura) использует levels.
+# При выборе Model 02–07 используется назначенная здесь модель.
+model_choices:
+  model_02:
+    label: "Model 02"
+    enabled: false
+    model: ""
+  model_03:
+    label: "Model 03"
+    enabled: false
+    model: ""
+  model_04:
+    label: "Model 04"
+    enabled: false
+    model: ""
+  model_05:
+    label: "Model 05"
+    enabled: false
+    model: ""
+  model_06:
+    label: "Model 06"
+    enabled: false
+    model: ""
+  model_07:
+    label: "Model 07"
+    enabled: false
+    model: ""

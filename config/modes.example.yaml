@@ -1,80 +1,187 @@
-# Forma: настоящие имена моделей задаются ТОЛЬКО здесь, на сервере.
-# После изменений файл перечитывается при следующей отправке.
-# Порядок: уровень -> reasoning -> speed -> модель Ollama.
-# Пример: medium / normal: "your-model:tag"
-# Пустые значения означают «не настроено».
-# Уровни Pro и Ultra отключены до будущего обновления.
+# Forma — настройка новой кнопки. Меняйте enabled: true / false и подписи.
+# Имена моделей нигде в интерфейсе не показываются.
+# Reasoning: 7 переключателей внутри КАЖДОГО уровня. Speed: 2 варианта.
+# Каждый enabled переключается независимо. Сервер проверяет блокировки при отправке.
+# Пустая модель = режим виден, но отправка недоступна до заполнения.
+# Файл перечитывается при следующем запросе.
 
+speed:
+  normal:
+    enabled: true
+  fast:
+    enabled: true
+
+custom:
+  enabled: false # кнопка «Custom» пока заблокирована
+  options:
+    option_1:
+      enabled: false
+      label: "Скоро 1"
+    option_2:
+      enabled: false
+      label: "Скоро 2"
+    option_3:
+      enabled: false
+      label: "Скоро 3"
+    option_4:
+      enabled: false
+      label: "Скоро 4"
+    option_5:
+      enabled: false
+      label: "Скоро 5"
+
+# Под каждым уровнем 7 НЕЗАВИСИМЫХ Thinking Effort (minimal/low/medium/high/extra_high/max/ultra).
+# Отключение, например, minimal/models/high/enabled не блокирует moderate/models/high.
 levels:
-  core:
+  minimal:
     enabled: true
     models:
+      minimal:
+        enabled: true
+        normal: ""
+        fast: ""
+      ultra:
+        enabled: true
+        normal: ""
+        fast: ""
       low:
+        enabled: true
         normal: ""
         fast: ""
       medium:
+        enabled: true
         normal: ""
         fast: ""
       high:
+        enabled: true
         normal: ""
         fast: ""
       extra_high:
+        enabled: true
         normal: ""
         fast: ""
       max:
+        enabled: true
         normal: ""
         fast: ""
-  plus:
+  moderate:
     enabled: true
     models:
+      minimal:
+        enabled: true
+        normal: ""
+        fast: ""
+      ultra:
+        enabled: true
+        normal: ""
+        fast: ""
       low:
+        enabled: true
         normal: ""
         fast: ""
       medium:
+        enabled: true
         normal: ""
         fast: ""
       high:
+        enabled: true
         normal: ""
         fast: ""
       extra_high:
+        enabled: true
         normal: ""
         fast: ""
       max:
+        enabled: true
         normal: ""
         fast: ""
-  pro:
+  intensive:
     enabled: false
     models:
+      minimal:
+        enabled: true
+        normal: ""
+        fast: ""
+      ultra:
+        enabled: true
+        normal: ""
+        fast: ""
       low:
+        enabled: true
         normal: ""
         fast: ""
       medium:
+        enabled: true
         normal: ""
         fast: ""
       high:
+        enabled: true
         normal: ""
         fast: ""
       extra_high:
+        enabled: true
         normal: ""
         fast: ""
       max:
+        enabled: true
         normal: ""
         fast: ""
-  ultra:
+  extreme:
     enabled: false
     models:
+      minimal:
+        enabled: true
+        normal: ""
+        fast: ""
+      ultra:
+        enabled: true
+        normal: ""
+        fast: ""
       low:
+        enabled: true
         normal: ""
         fast: ""
       medium:
+        enabled: true
         normal: ""
         fast: ""
       high:
+        enabled: true
         normal: ""
         fast: ""
       extra_high:
+        enabled: true
         normal: ""
         fast: ""
       max:
+        enabled: true
         normal: ""
         fast: ""
+
+# v5: публичные псевдонимы Model; default (Anime-Sakura) использует levels.
+# При выборе Model 02–07 используется назначенная здесь модель.
+model_choices:
+  model_02:
+    label: "Model 02"
+    enabled: false
+    model: ""
+  model_03:
+    label: "Model 03"
+    enabled: false
+    model: ""
+  model_04:
+    label: "Model 04"
+    enabled: false
+    model: ""
+  model_05:
+    label: "Model 05"
+    enabled: false
+    model: ""
+  model_06:
+    label: "Model 06"
+    enabled: false
+    model: ""
+  model_07:
+    label: "Model 07"
+    enabled: false
+    model: ""

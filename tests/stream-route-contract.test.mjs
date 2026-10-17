@@ -41,7 +41,7 @@ function fixture(chunks, { delay = 0 } = {}) {
       if (delay) setTimeout(write, delay); else write();
     },
   }), { headers: { 'Content-Type': 'application/x-ndjson' } });
-  const create = new Function('z', 'storage', 'randomUUID', 'sendSchema', 'checkOllama', 'normalizeOllamaUrl', 'ollamaUrl', 'previewMode', 'connectionError', 'registerComputerRoutes', 'registerAuthRoutes', 'currentUser', 'fetch', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', `${code}\nreturn registerRoutes;`);
+  const create = new Function('z', 'storage', 'randomUUID', 'sendSchema', 'checkOllama', 'normalizeOllamaUrl', 'ollamaUrl', 'previewMode', 'connectionError', 'registerComputerRoutes', 'registerAuthRoutes', 'currentUser', 'fetch', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', `const isFormaMode = () => false;\n${code}\nreturn registerRoutes;`);
   const route = create(z, storage, () => 'assistant-id', valid, () => {}, () => {}, () => 'http://localhost:11434', false, (e) => String(e?.message || e), () => {}, () => {}, () => ({id:'u'}), fetch,
     (fn, ms) => setInterval(fn, Math.min(ms, 25)), clearInterval, setTimeout, clearTimeout);
   const out = { text: '' };
