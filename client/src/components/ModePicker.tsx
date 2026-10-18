@@ -1,6 +1,7 @@
 import { useRef, useState, type CSSProperties, type PointerEvent, type KeyboardEvent } from "react";
 import { Check, ChevronRight, SlidersHorizontal } from "lucide-react";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { MoleculeLevelButtonUnlit } from "./MoleculeLevelButton";
 
 // Keys are stable identifiers for localStorage, API requests and config/modes.yaml.
 export const LEVELS = ["minimal", "moderate", "intensive", "extreme"] as const;
@@ -101,6 +102,7 @@ export default function ModePicker({ selection, available, disabled, onSelection
       <PopoverTrigger asChild><button type="button" disabled={disabled} className="forma-mode-trigger" data-testid="button-mode-picker" aria-label="Выбрать уровень Forma">
         {LEVEL_NAMES[selection.level]} - {REASONING_NAMES[selection.reasoning]}
       </button></PopoverTrigger>
+      <MoleculeLevelButtonUnlit level={selection.level} />
       <button type="button" className="forma-mode-trigger forma-settings-trigger" aria-label="Параметры ответа" title="Параметры ответа" data-testid="button-generation-settings" onClick={() => { changeOpen(false); onOpenSettings(); }}><SlidersHorizontal size={18}/></button>
     </div>
     <PopoverContent id="forma-mode-popup" align="end" side="bottom" sideOffset={7.5} collisionPadding={6} className="forma-mode-popover" data-testid="menu-forma-modes">
