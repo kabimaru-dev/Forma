@@ -9,7 +9,7 @@ speed:
   normal:
     enabled: true
   fast:
-    enabled: false
+    enabled: true
 
 custom:
   enabled: false # кнопка «Custom» пока заблокирована
@@ -37,124 +37,124 @@ levels:
     enabled: true
     models:
       minimal:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       ultra:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       low:
         enabled: true
-        normal: "ornith-1.5-35b-a3b-uncensored.q8_0_32k:latest"
+        normal: ""
         fast: ""
       medium:
         enabled: true
-        normal: "ornith-1.5-9b-uncensored-q8_0_32k:latest"
+        normal: ""
         fast: ""
       high:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       extra_high:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       max:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
   moderate:
     enabled: true
     models:
       minimal:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       ultra:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       low:
         enabled: true
-        normal: "gemma-4-31b-it-the-deckard-heretic-uncensored-thinking.q8_0_32k:latest"
+        normal: ""
         fast: ""
       medium:
         enabled: true
-        normal: "qwen3.8-27b-turbo-brilliance-50x-ri-neo-max-mtp-q8_0_32k:latest"
+        normal: ""
         fast: ""
       high:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       extra_high:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       max:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
   intensive:
-    enabled: true
+    enabled: false
     models:
       minimal:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       ultra:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       low:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       medium:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       high:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       extra_high:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       max:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
   extreme:
-    enabled: true
+    enabled: false
     models:
       minimal:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       ultra:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       low:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       medium:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       high:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       extra_high:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
       max:
-        enabled: false
+        enabled: true
         normal: ""
         fast: ""
 

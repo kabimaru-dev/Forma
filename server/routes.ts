@@ -8,6 +8,9 @@ import { checkOllama, normalizeOllamaUrl, ollamaUrl, previewMode, connectionErro
 import { registerComputerRoutes } from "./computer";
 import { registerAuthRoutes, currentUser } from "./auth";
 import { isFormaMode, publicModes, resolveMode } from "./modes";
+import { generatedUsage } from "./generatedUsage";
+import { contextWindows } from "./contextWindows";
+import { preloadModel, waitForModelPreload } from "./modelPreload";
 
 const owner = (req: Request) => currentUser(req)!.id;
 const active = new Map<string, AbortController>();
@@ -84,11 +87,57 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!chat) return fail(res, "Чат не найден.", 404);
     res.json({ title: chat.title });
   });
+  app.patch("/api/chats/:id/messages/:messageId", (req, res) => {
+    const id = String(req.params.id), messageId = String(req.params.messageId);
+    const who = owner(req);
+    if (active.has(id)) return fail(res, "Дождитесь завершения генерации перед редактированием.", 409);
+    const chat = storage.get(who, id);
+    if (!chat) return fail(res, "Чат не найден.", 404);
+    const parsed = z.union([
+      z.object({ content: z.string().trim().min(1).max(100000) }).strict(),
+      z.object({ revisionIndex: z.number().int().min(0) }).strict(),
+    ]).safeParse(req.body);
+    if (!parsed.success) return fail(res, "Введите текст сообщения или номер сохранённой редакции.");
+    const index = chat.messages.findIndex(m => m.id === messageId);
+    if (index < 0) return fail(res, "Сообщение не найдено.", 404);
+    const original = chat.messages[index];
+    const revisions = original.revisions?.length ? [...original.revisions] : [original.content];
+    let revisionIndex: number;
+    if ("content" in parsed.data) {
+      const content = parsed.data.content;
+      if (!content) return fail(res, "Текст не может быть пустым.");
+      if (content === original.content) return res.json({ message: original });
+      revisions.push(content);
+      revisionIndex = revisions.length - 1;
+    } else {
+      revisionIndex = parsed.data.revisionIndex;
+      if (revisionIndex >= revisions.length) return fail(res, "Такой редакции нет.", 400);
+    }
+    const message: Message = { ...original, content: revisions[revisionIndex], revisions, revisionIndex };
+    const messages = [...chat.messages];
+    messages[index] = message;
+    storage.update(who, id, { messages });
+    res.json({ message });
+  });
   app.delete("/api/chats/:id", (req, res) => {
     const id = String(req.params.id);
     if (!storage.get(owner(req), id)) return fail(res, "Чат не найден.", 404);
     if (active.has(id)) return fail(res, "Сначала остановите ответ.", 409);
-    storage.delete(owner(req), id); res.json({ ok: true });
+    storage.delete(owner(req), id);
+    // Usage is stored outside SQLite; remove its sidecar entry on chat deletion.
+    try { generatedUsage.remove(id); } catch (e) { console.warn("Forma usage cleanup failed:", e); }
+    try { contextWindows.remove(id); } catch (e) { console.warn("Forma context cleanup failed:", e); }
+    res.json({ ok: true });
+  });
+  // n_gen is llama.cpp's generated-token count. Ollama's /api/chat calls
+  // expose this as eval_count in the final response, NOT prompt_eval_count.
+  // The original n_gen of old completions cannot be recovered from Ollama
+  // after the fact. Never generate a new response to fake that old metric.
+  app.get("/api/chats/:id/tokens", (req, res) => {
+    const chat = storage.get(owner(req), String(req.params.id));
+    if (!chat) return fail(res, "Чат не найден.", 404);
+    const { nGen, knownNGen, missing } = generatedUsage.summarize(chat);
+    res.json({ tokens: nGen, knownTokens: knownNGen, missing, context: contextWindows.display(chat.id, storage.settings(owner(req))) });
   });
   app.get("/api/chats/:id/export", (req, res) => {
     const chat = storage.get(owner(req), String(req.params.id));
@@ -131,6 +180,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.on("close", () => { if (!res.writableEnded) controller.abort(); });
     const assistant: Message = { id: randomUUID(), role: "assistant", content: "", model };
     let complete = false, errorMessage = "";
+    let nGen: number | null = null;
+    let promptTokens: number | null = null;
+    let usedContext = 0;
+    let contextSettings: ReturnType<typeof storage.settings> | undefined;
     let lastSave = Date.now();
     // Save long-running streams periodically. A browser/network disconnect must
     // not erase everything the model has already generated.
@@ -156,7 +209,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // A model can take a while to load before responding; bound that phase too.
     resetInactivity();
     try {
+      // Start the browser stream before Ollama spends time loading the model.
+      // This avoids a silent connection while preparing a large context window.
+      streamHeaders(res);
+      forward({ type: "start", messages, assistantId: assistant.id });
+      heartbeat = setInterval(() => forward({ type: "heartbeat" }), 5000);
       const settings = storage.settings(who);
+      contextSettings = settings;
+      usedContext = contextWindows.current(id, upstreamModel, settings);
+      // A real /api/chat request loads the runner implicitly. Previously, an
+      // extra empty /api/chat was sent *before every message*, leading to
+      // needless model reloads and apparent reconnects.
+      // An already-running background preload is allowed to settle first.
+      await waitForModelPreload(OLLAMA, upstreamModel, controller.signal);
       const upstream = await fetch(`${OLLAMA}/api/chat`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         signal: controller.signal,
@@ -166,16 +231,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             ...(settings.system ? [{ role: "system", content: settings.system }] : []),
             ...messages.filter(m => m.content).map(({ role, content }) => ({ role, content })),
           ],
-          options: { temperature: settings.temperature, num_ctx: settings.context },
+          options: { temperature: settings.temperature, num_ctx: usedContext },
+          keep_alive: "10m",
         }),
       });
       if (!upstream.ok) {
         const info = await upstream.json().catch(() => ({}));
         throw new Error(info.error || `Ollama вернула ошибку ${upstream.status}.`);
       }
-      streamHeaders(res);
-      forward({ type: "start", messages, assistantId: assistant.id });
-      heartbeat = setInterval(() => forward({ type: "heartbeat" }), 10000);
+      forward({ type: "context", context: usedContext });
       await readLines(upstream, event => {
         resetInactivity();
         if (event.error) throw new Error(event.error);
@@ -187,7 +251,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           assistant.content += event.message.content;
           forward({ type: "token", content: event.message.content });
         }
-        if (event.done) complete = true;
+        if (event.done) {
+          complete = true;
+          // The authoritative generated-token count: llama.cpp n_gen maps to
+          // Ollama eval_count. Do not replace it with prompt_eval_count.
+          if (Number.isSafeInteger(event.prompt_eval_count) && event.prompt_eval_count >= 0) promptTokens = event.prompt_eval_count;
+          if (Number.isSafeInteger(event.eval_count) && event.eval_count >= 0) {
+            nGen = event.eval_count;
+            forward({ type: "usage", n_gen: nGen });
+          }
+        }
         if ((assistant.content || assistant.thinking) && Date.now() - lastSave >= 2000) persistPartial();
       });
       if (!complete) throw new Error("Поток оборвался до завершения ответа. Полученная часть сохранена.");
@@ -204,15 +277,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // The data was kept even when the final response never arrived.
       if (assistant.content || assistant.thinking) messages.push({ ...assistant, interrupted: !complete || !!errorMessage });
       storage.update(who, id, { messages, model });
+      if (complete && !errorMessage && nGen !== null && (assistant.content || assistant.thinking)) {
+        try { generatedUsage.record(id, assistant.id, nGen); }
+        catch (e) { console.warn("Forma could not persist Ollama n_gen:", e); }
+      }
+      // After a completed reply, advance the window for the NEXT turn using
+      // Ollama's actual prompt and generation counters (not estimates).
+      let nextContext: number | null = null;
+      if (complete && !errorMessage && contextSettings && promptTokens !== null && nGen !== null) {
+        try {
+          const transition = contextWindows.record(id, upstreamModel, contextSettings, promptTokens, nGen);
+          if (transition.changed) nextContext = transition.after;
+        } catch (e) { console.warn("Forma context metadata write failed:", e); }
+      }
       active.delete(id);
       if (!res.destroyed) {
-        if (!res.headersSent && errorMessage) fail(res, errorMessage, 422);
-        else {
-          if (errorMessage) forward({ type: "error", message: errorMessage });
-          forward({ type: "done", complete: complete && !errorMessage });
-          res.end();
-        }
+        if (errorMessage) forward({ type: "error", message: errorMessage });
+        if (nextContext !== null) forward({ type: "context", context: nextContext });
+        forward({ type: "done", complete: complete && !errorMessage });
+        res.end();
       }
+      // Start actual preloading only AFTER the stream has ended: no concurrent
+      // runner reload during a response. The next send waits for this preload.
+      if (nextContext !== null && active.size === 0) void preloadModel(OLLAMA, upstreamModel, nextContext)
+        .catch(e => console.warn("Forma next context preload failed:", e));
     }
   });
   app.post("/api/models/pull", async (req, res) => {

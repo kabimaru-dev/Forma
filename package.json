@@ -1,6 +1,6 @@
 {
   "name": "forma-ollama",
-  "version": "1.1.0",
+  "version": "5.5.0",
   "engines": {
     "node": ">=22.0.0"
   },
@@ -15,7 +15,7 @@
     "setup:computer": "playwright install chromium",
     "setup:computer:linux": "playwright install --with-deps chromium",
     "test": "node --test tests/mode-picker-contract.test.mjs tests/modes-yaml.test.mjs && node --test tests/stream-route-contract.test.mjs && node --test tests/integration.test.mjs && tsx --test tests/computer.test.ts",
-    "test:stream": "node --test tests/stream-route-contract.test.mjs",
+    "test:stream": "node --test tests/stream-route-contract.test.mjs tests/context-windows.test.mjs",
     "check": "tsc --incremental false",
     "db:push": "drizzle-kit push"
   },

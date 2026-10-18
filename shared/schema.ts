@@ -2,7 +2,7 @@ import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-export type Message = { id: string; role: "user" | "assistant"; content: string; thinking?: string; model?: string; interrupted?: boolean };
+export type Message = { id: string; role: "user" | "assistant"; content: string; thinking?: string; model?: string; interrupted?: boolean; revisions?: string[]; revisionIndex?: number };
 export const chats = sqliteTable("chats", {
   id: text("id").primaryKey(),
   owner: text("owner").notNull(),
@@ -20,7 +20,10 @@ export const preferences = sqliteTable("preferences", {
 });
 export const settingsSchema = z.object({
   temperature: z.number().min(0).max(2),
-  context: z.number().int().min(2048).max(32768),
+  context: z.number().int().min(2048).max(262144),
+  contextStep: z.number().int().min(0).max(32768).default(16384),
+  contextPreload: z.number().int().min(0).max(16384).default(8192),
+  contextDefaultsApplied: z.boolean().default(true),
   system: z.string().max(12000),
   theme: z.enum(["system", "light", "dark"]),
   model: z.string().max(150),

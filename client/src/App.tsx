@@ -21,6 +21,10 @@ type Model = { name: string; size: number; remote_host?: string; details?: { par
 type Status = { connected: boolean; host: string; models: Model[]; backend?: boolean; message?: string; editable?: boolean; preview?: boolean };
 type ChatSummary = Omit<Chat, "owner" | "messages"> & { preview: string; count: number };
 
+// llama.cpp n_gen corresponds to Ollama eval_count, summed over replies whose
+// original generation statistics were actually received and saved.
+type ContextUsage = { tokens: number | null; knownTokens: number; missing: number; context: number };
+
 const prompts = [
   { icon: Pencil, title: "Найти нужные слова", text: "Письма, тексты и свежий взгляд", prompt: "Помоги написать текст. Сначала задай мне вопросы об аудитории, цели и желаемом стиле." },
   { icon: Code2, title: "Разобраться в коде", text: "От первой строки до решения", prompt: "Помоги разобраться с кодом. Уточни язык программирования и задачу, которую я хочу решить." },
@@ -61,9 +65,12 @@ function Workspace({ user }: { user: { id: string; username: string } }) {
   const chatId = location.startsWith("/chat/") ? location.split("/")[2] : null;
   const isComputer = location === "/computer";
   const { open, toggleSidebar, setOpenMobile, isMobile } = useSidebar();
+  const [busy, setBusy] = useState(false);
   const settingsQuery = useQuery<Settings>({ queryKey: ["/api/settings"] });
   const settings = settingsQuery.data || defaultSettings;
-  const statusQuery = useQuery<Status>({ queryKey: ["/api/status"], refetchInterval: 30000 });
+  // Ollama may be unavailable to the short status probe during a large load.
+  // Don't keep probing while an answer is being streamed.
+  const statusQuery = useQuery<Status>({ queryKey: ["/api/status"], refetchInterval: busy ? false : 60000 });
   const status: Status | undefined = statusQuery.isError ? { connected: false, backend: false, host: "", models: [], editable: false, message: (statusQuery.error as Error).message } : statusQuery.data;
   const chatsQuery = useQuery<ChatSummary[]>({ queryKey: ["/api/chats"] });
   const chats = chatsQuery.data || [];
@@ -94,7 +101,6 @@ function Workspace({ user }: { user: { id: string; username: string } }) {
   const [chatMenu, setChatMenu] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [busy, setBusy] = useState(false);
   const [live, setLive] = useState<{ id: string; messages: Message[] } | null>(null);
   const [rename, setRename] = useState<ChatSummary | null>(null);
   const [renameText, setRenameText] = useState("");
@@ -112,37 +118,78 @@ function Workspace({ user }: { user: { id: string; username: string } }) {
   const sendModel = modeId(modeSelection);
   const current = chats.find(c => c.id === chatId);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+  const [editError, setEditError] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
 
-  const [editedMessages, setEditedMessages] = useState<Record<string, string>>({});
+  // Refresh on chat selection or new answer. Usage is exact Ollama eval_count
+  // for completed answers only; old answers without metadata stay unknown.
+  const usageQuery = useQuery<ContextUsage>({
+    queryKey: ["chat-generated-tokens", chatId, chatQuery.data?.updatedAt, settings.context, settings.contextStep, settings.contextPreload],
+    enabled: !!chatId && !isComputer && !!chatQuery.data && !busy,
+    queryFn: async ({ signal }) => {
+      const response = await apiRequest("GET", `/api/chats/${chatId}/tokens`, undefined, signal);
+      return response.json();
+    },
+    staleTime: Infinity,
+    retry: false,
+  });
+  const tokenContext = usageQuery.data?.context ?? (settings.contextStep > 0 ? Math.max(2048, settings.contextStep) : settings.context);
+  const tokenCount = !chatId ? 0 : usageQuery.data?.tokens;
+  const tokenLabel = `Токенов: ${usageQuery.isFetching || busy ? "…" : tokenCount ?? "—"} / ${tokenContext}`;
+  const tokenHint = usageQuery.isError
+    ? `Не удалось прочитать статистику генерации: ${(usageQuery.error as Error).message}. Нажмите для повтора.`
+    : usageQuery.data?.missing
+      ? `Сгенерировано (n_gen из Ollama): известно ${usageQuery.data.knownTokens}, но для ${usageQuery.data.missing} старых или прерванных ответов нет исходных точных значений. Нажмите для обновления.`
+      : "Число сгенерированных моделью токенов (n_gen = eval_count Ollama). Это не размер контекста. Нажмите для обновления.";
 
-  const displayMessages = messages.map((m) =>
-    editedMessages[m.id]
-      ? { ...m, content: editedMessages[m.id] }
-      : m
-  );
-
-  const startEdit = (m: any) => {
+  // Message edits are persisted to the existing chats.messages JSON column in SQLite.
+  // The composer draft is independent and is never overwritten by editing.
+  const displayMessages = messages;
+  const startEdit = (m: Message) => {
+    if (busy || savingEdit) return;
     setEditingId(m.id);
-    setDraft(m.content ?? "");
+    setEditText(m.content ?? "");
+    setEditError("");
   };
-
   const cancelEdit = () => {
     setEditingId(null);
-    setDraft("");
+    setEditText("");
+    setEditError("");
   };
-
-  const saveEdit = (m: any) => {
-    const text = draft.trim();
-    if (!text) return;
-
-    setEditedMessages((prev) => ({
-      ...prev,
-      [m.id]: text,
-    }));
-
-    setEditingId(null);
-    setDraft("");
+  const jumpToMessage = (index: number) => {
+    const message = displayMessages[index];
+    if (!message) return;
+    startEdit(message);
+    requestAnimationFrame(() => document.querySelector(`[data-testid="message-${index}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }));
   };
+  async function patchMessage(messageId: string, patch: { content: string } | { revisionIndex: number }) {
+    if (!chatId || busy || savingEdit) return;
+    setSavingEdit(true);
+    setEditError("");
+    try {
+      const res = await apiRequest("PATCH", `/api/chats/${chatId}/messages/${messageId}`, patch);
+      const data: { message: Message } = await res.json();
+      queryClient.setQueryData<Chat>(["/api/chats", chatId], old => old
+        ? { ...old, messages: old.messages.map(m => m.id === messageId ? data.message : m), updatedAt: Date.now() }
+        : old);
+      if (live?.id === chatId) setLive(old => old?.id === chatId ? {
+        ...old, messages: old.messages.map(m => m.id === messageId ? data.message : m),
+      } : old);
+      await queryClient.invalidateQueries({ queryKey: ["/api/chats"], exact: true });
+      setEditingId(null);
+      setEditText("");
+      setNotice("Изменение сохранено в истории");
+    } catch (e: any) {
+      setEditError(e.message || "Не удалось сохранить изменение.");
+    } finally { setSavingEdit(false); }
+  }
+  async function saveEdit(m: Message) {
+    const text = editText.trim();
+    if (!text) { setEditError("Сообщение не может быть пустым."); return; }
+    if (text === m.content) { cancelEdit(); return; }
+    await patchMessage(m.id, { content: text });
+  }
 
 
   useEffect(() => {
@@ -164,7 +211,12 @@ function Workspace({ user }: { user: { id: string; username: string } }) {
     const update = () => { if (settings.theme === "system") setTheme(media.matches ? "dark" : "light"); };
     media.addEventListener("change", update); return () => media.removeEventListener("change", update);
   }, [settings.theme]);
-  useEffect(() => { setError(""); setDraft(""); setAttachment(null); setOpenMobile(false); }, [location]);
+  useEffect(() => {
+    setError("");
+    cancelEdit();
+    setOpenMobile(false);
+    // Draft is intentionally not cleared here: send() owns the send lifecycle.
+  }, [location]);
   useEffect(() => {
     if (scroll.current) scroll.current.scrollTo({ top: scroll.current.scrollHeight, behavior: busy ? "instant" : "smooth" });
   }, [messages.length, messages.at(-1)?.content, busy]);
@@ -208,7 +260,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
   }
   async function send(retry = false) {
     if (busy || (!retry && !draft.trim() && !attachment)) return;
-    if (!status?.connected) { setError("Сначала подключите Ollama. Ваш текст останется здесь."); openSettings(); return; }
+    if (status?.backend === false) { setError("Сервер Forma недоступен. Ваш текст останется здесь."); return; }
     if (modesQuery.data && (modeSelection.model && modeSelection.model !== "default"
       ? !modesQuery.data.modelChoices?.[modeSelection.model]?.enabled || !modesQuery.data.levels[modeSelection.level] || !modesQuery.data.reasoning[modeSelection.level][modeSelection.reasoning] || !modesQuery.data.speed[modeSelection.speed]
       : !modesQuery.data.available?.[modeSelection.level]?.[modeSelection.reasoning]?.[modeSelection.speed])) {
@@ -217,6 +269,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
     const content = `${draft.trim()}${attachment ? `\n\nФайл: ${attachment.name}\n\`\`\`\n${attachment.text}\n\`\`\`` : ""}`.trim();
     if (content.length > 100000) { setError("Сообщение вместе с файлом должно быть короче 100 000 символов."); return; }
     setError(""); setBusy(true);
+    if (!retry) { setDraft(""); setAttachment(null); }
     let id = chatId;
     const aborter = new AbortController(); controller.current = aborter;
     let started = false;
@@ -236,7 +289,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
     ] });
     try {
       if (!id) {
-        const res = await apiRequest("POST", "/api/chats", { title: draft.trim().slice(0, 65) || attachment?.name || "Новый диалог", model: sendModel });
+        const res = await apiRequest("POST", "/api/chats", { title: content.slice(0, 65) || "Новый диалог", model: sendModel });
         const created = await res.json(); id = created.id; navigate(`/chat/${id}`);
       }
       const activeId = id!;
@@ -276,7 +329,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
           const local = snapshot();
           queryClient.setQueryData<Chat>(key, previous => previous
             ? { ...previous, messages: local, model: sendModel }
-            : { id: id!, owner: user.id, title: draft.trim().slice(0, 65) || "Новый диалог", model: sendModel, updatedAt: Date.now(), messages: local });
+            : { id: id!, owner: user.id, title: content.slice(0, 65) || "Новый диалог", model: sendModel, updatedAt: Date.now(), messages: local });
         } else if (!retry && !started && !aborter.signal.aborted) {
           // The request may have failed before Ollama accepted the prompt.
           setDraft(content);
@@ -342,7 +395,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
       </SidebarFooter>
     </Sidebar>
     <main className="main-panel">
-      <header className="topbar"><div className="topbar-left">{(!open || isMobile) && <IconButton label="Открыть меню" testid="button-open-sidebar" onClick={toggleSidebar}><PanelLeft size={19}/></IconButton>}<span className="page-breadcrumb">Личное пространство</span><ChevronRight className="breadcrumb-chevron" size={13}/><span className="page-name">{isComputer ? "Computer" : current?.title || "Новый диалог"}</span></div><div className="topbar-right"><button className={`connection-status ${status?.connected ? "online" : ""}`} data-testid="status-connection" onClick={() => openSettings()}><span className="status-dot"/><span>{statusQuery.isFetching && !status ? "Проверяем Ollama" : status?.backend === false ? "Сервер Forma недоступен" : status?.connected ? "Ollama подключена" : "Ollama не подключена"}</span></button><span className="topbar-divider"/><IconButton label={theme === "light" ? "Тёмная тема" : "Светлая тема"} testid="button-theme" onClick={changeTheme}>{theme === "light" ? <Moon size={18}/> : <Sun size={18}/>}</IconButton></div></header>
+      <header className="topbar"><div className="topbar-left">{(!open || isMobile) && <IconButton label="Открыть меню" testid="button-open-sidebar" onClick={toggleSidebar}><PanelLeft size={19}/></IconButton>}<span className="page-breadcrumb">Личное пространство</span><ChevronRight className="breadcrumb-chevron" size={13}/><span className="page-name">{isComputer ? "Computer" : current?.title || "Новый диалог"}</span><span className="forma-version" data-testid="forma-version" title="Версия Forma">v5.5</span></div><div className="topbar-right">{!isComputer && <button type="button" className="forma-token-counter" data-testid="token-counter" aria-label={tokenLabel} title={tokenHint} onClick={() => usageQuery.refetch()} disabled={!chatId || busy || usageQuery.isFetching}><span className="token-counter-label">Токенов:</span> <span>{tokenLabel.slice("Токенов: ".length)}</span></button>}<button className={`connection-status ${status?.connected ? "online" : ""}`} data-testid="status-connection" onClick={() => openSettings()}><span className="status-dot"/><span>{statusQuery.isFetching && !status ? "Проверяем Ollama" : status?.backend === false ? "Сервер Forma недоступен" : status?.connected ? "Ollama подключена" : "Ollama не подключена"}</span></button><span className="topbar-divider"/><IconButton label={theme === "light" ? "Тёмная тема" : "Светлая тема"} testid="button-theme" onClick={changeTheme}>{theme === "light" ? <Moon size={18}/> : <Sun size={18}/>}</IconButton></div></header>
       {isComputer ? <Computer models={models} model={model} connected={!!status?.connected} connect={() => openSettings()}/> : chatId ? <>
         <div className="conversation-scroll" ref={scroll}>
           <div className="messages">
@@ -401,15 +454,19 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
                           }}
                         >
                           <textarea
-                            value={draft}
-                            onChange={(e) => setDraft(e.target.value)}
-                            rows={Math.max(2, Math.min(10, draft.split("\n").length + 1))}
+                            value={editText}
+                            onChange={(e) => setEditText(e.target.value)}
+                            disabled={savingEdit || busy}
+                            aria-label="Редактировать текст сообщения"
+                            data-testid={`editor-message-${i}`}
+                            rows={Math.max(2, Math.min(10, editText.split("\n").length + 1))}
                           />
+                          {editError && <p className="inline-error" role="alert">{editError}</p>}
                           <div className="message-edit-actions">
-                            <button type="submit">Сохранить</button>
-                            <button type="button" onClick={cancelEdit}>
-                              Отмена
-                            </button>
+                            <button type="button" disabled={i === 0 || savingEdit} onClick={() => jumpToMessage(i - 1)} title="Редактировать предыдущее сообщение">↑ Предыдущее</button>
+                            <button type="button" disabled={i >= displayMessages.length - 1 || savingEdit} onClick={() => jumpToMessage(i + 1)} title="Редактировать следующее сообщение">↓ Следующее</button>
+                            <button type="submit" disabled={savingEdit || busy || !editText.trim()}>Сохранить</button>
+                            <button type="button" disabled={savingEdit} onClick={cancelEdit}>Отмена</button>
                           </div>
                         </form>
                       ) : m.content ? (
@@ -430,6 +487,15 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
                       <small className="interrupted">Ответ прерван — полученная часть сохранена</small>
                     )}
 
+                    {Array.isArray(m.revisions) && m.revisions.length > 1 && (
+                      <div className="message-revisions" aria-label="История редакций">
+                        <button type="button" disabled={busy || savingEdit || (m.revisionIndex ?? m.revisions.length - 1) === 0}
+                          onClick={() => patchMessage(m.id, { revisionIndex: (m.revisionIndex ?? m.revisions!.length - 1) - 1 })} title="Предыдущая редакция">←</button>
+                        <span>{(m.revisionIndex ?? m.revisions.length - 1) + 1} / {m.revisions.length}</span>
+                        <button type="button" disabled={busy || savingEdit || (m.revisionIndex ?? m.revisions.length - 1) >= m.revisions.length - 1}
+                          onClick={() => patchMessage(m.id, { revisionIndex: (m.revisionIndex ?? m.revisions!.length - 1) + 1 })} title="Следующая редакция">→</button>
+                      </div>
+                    )}
                     <div className="message-actions">
                       <IconButton
                         label="Копировать сообщение"
@@ -439,10 +505,11 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
                         <Copy size={15} />
                       </IconButton>
 
-                      {m.content && (
+                      {m.id !== "pending-user" && m.id !== "stream-assistant" && (
                         <IconButton
                           label="Изменить сообщение"
                           testid={`edit-message-${i}`}
+                          disabled={busy || savingEdit}
                           onClick={() => startEdit(m)}
                         >
                           <Pencil size={15} />
@@ -505,6 +572,22 @@ function SettingsDialog({ open, setOpen, tab, setTab, settings, save, status, re
   const form = useForm<Settings>({ defaultValues: settings });
   const [saved, setSaved] = useState(false), [error, setError] = useState("");
   const [host, setHost] = useState(""), [checking, setChecking] = useState(false), [connection, setConnection] = useState<Status | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stepControl = form.register("contextStep", { valueAsNumber: true });
+  const preloadControl = form.register("contextPreload", { valueAsNumber: true });
+  function saveSlider(name: "contextStep" | "contextPreload", value: number) {
+    // Settings belong to the account, not the active chat. Persist after each
+    // slider adjustment, without requiring a separate manual Save action.
+    setSaved(false);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const values = { ...form.getValues(), [name]: value, contextDefaultsApplied: true };
+    saveTimer.current = setTimeout(async () => {
+      try { await save(values); setError(""); setSaved(true); }
+      catch (e: any) { setError(e.message || "Не удалось сохранить глобальные настройки."); }
+      finally { saveTimer.current = null; }
+    }, 350);
+  }
+  useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
   useEffect(() => { if (open) { form.reset(settings); setSaved(false); setError(""); setConnection(null); setHost(settings.ollamaUrl || status?.host || "http://127.0.0.1:11434"); } }, [open]);
   async function checkConnection() {
     setChecking(true); setError(""); setConnection(null);
@@ -534,8 +617,10 @@ function SettingsDialog({ open, setOpen, tab, setTab, settings, save, status, re
       
       <div className="dialog-actions"><button className="secondary-button" data-testid="button-refresh-backend" disabled={refreshing} onClick={refresh}><RefreshCw size={15}/>Обновить статус</button><button className="primary-button" data-testid="button-check-connection" disabled={checking} onClick={checkConnection}>{checking ? <Loader2 className="spin" size={16}/> : <Plug size={16}/>}Проверить и сохранить</button></div>
     </div> :
-    <Form {...form}><form onSubmit={form.handleSubmit(async values => { try { setError(""); await save(values); setSaved(true); } catch (e: any) { setError(e.message); } })} className="settings-form">
-      {tab === "generation" ? <><div className="field"><label htmlFor="temperature">Творческий подход <span>{Number(form.watch("temperature")).toFixed(1)}</span></label><input id="temperature" data-testid="input-temperature" type="range" min="0" max="2" step="0.1" {...form.register("temperature", { valueAsNumber: true })}/><div className="range-labels"><span>Точнее</span><span>Креативнее</span></div></div><div className="field"><label htmlFor="context">Размер контекста</label><select id="context" className="text-input" data-testid="select-context" {...form.register("context", { valueAsNumber: true })}>{[2048, 4096, 8192, 16384, 32768].map(n => <option key={n} value={n}>{n.toLocaleString("ru")} токенов</option>)}</select><p className="field-hint">Большой контекст требует больше оперативной памяти. Фактический предел зависит от модели.</p></div><div className="field"><label htmlFor="system">Инструкция для ассистента</label><textarea id="system" data-testid="input-system" rows={4} className="text-input" maxLength={12000} {...form.register("system")}/><p className="field-hint">Тон общения, язык и правила для всех новых ответов.</p></div></> : <div className="appearance-options">{[["light", "Светлая", Sun], ["dark", "Тёмная", Moon], ["system", "Как в системе", Monitor]].map(([id, label, Icon]: any) => <button type="button" key={id} data-testid={`theme-${id}`} className={`theme-option ${form.watch("theme") === id ? "chosen" : ""}`} onClick={() => { form.setValue("theme", id); setSaved(false); }}><div className={`theme-preview ${id}`}><div/><section><span/><span/><span/></section></div><div><Icon size={16}/>{label}{form.watch("theme") === id && <Check size={16}/>}</div></button>)}</div>}
+    <Form {...form}><form onSubmit={form.handleSubmit(async values => { try { if (saveTimer.current) clearTimeout(saveTimer.current); saveTimer.current = null; setError(""); await save(values); setSaved(true); } catch (e: any) { setError(e.message); } })} className="settings-form">
+      {tab === "generation" ? <><div className="field"><label htmlFor="temperature">Творческий подход <span>{Number(form.watch("temperature")).toFixed(1)}</span></label><input id="temperature" data-testid="input-temperature" type="range" min="0" max="2" step="0.1" {...form.register("temperature", { valueAsNumber: true })}/><div className="range-labels"><span>Точнее</span><span>Креативнее</span></div></div><div className="field"><label htmlFor="context">Размер контекста при ручном режиме</label><select id="context" className="text-input" data-testid="select-context" disabled={Number(form.watch("contextStep")) > 0} {...form.register("context", { valueAsNumber: true })}>{[2048, 4096, 8192, 16384, 32768, 49152, 65536, 98304, 131072, 196608, 262144].map(n => <option key={n} value={n}>{(n / 1024).toLocaleString("ru")}K токенов</option>)}</select><p className="field-hint">Используется, если автоматическое расширение отключено (шаг 0). Автоматическое расширение ограничено 256K и возможностями модели.</p></div>
+      <div className="field"><label htmlFor="context-step">Загружать модель по достижении N токенов <span>{(Number(form.watch("contextStep") || 0) / 1024).toLocaleString("ru")}K</span></label><input id="context-step" data-testid="slider-context-step" type="range" min="0" max="32768" step="1024" {...stepControl} onChange={e => { stepControl.onChange(e); saveSlider("contextStep", Number(e.currentTarget.value)); }}/><div className="range-labels"><span>0 — выключено</span><span>32K</span></div><p className="field-hint">Шаг увеличения окна. Например, 8K → 16K → 24K → 32K … до 256K. При значении 0 сохраняется ручной размер контекста.</p></div>
+      <div className="field"><label htmlFor="context-preload">Заранее загружать модель, если до лимита осталось N токенов <span>{(Number(form.watch("contextPreload") || 0) / 1024).toLocaleString("ru")}K</span></label><input id="context-preload" data-testid="slider-context-preload" type="range" min="0" max="16384" step="1024" disabled={Number(form.watch("contextStep")) === 0} {...preloadControl} onChange={e => { preloadControl.onChange(e); saveSlider("contextPreload", Number(e.currentTarget.value)); }}/><div className="range-labels"><span>0 — без упреждения</span><span>16K</span></div><p className="field-hint">Ollama заранее загрузит расширенное окно после завершения ответа. В режиме упреждения размер может удвоиться: 32K → 64K, 48K → 96K (максимум 256K). Для маленьких окон запас ограничен половиной окна.</p></div><div className="field"><label htmlFor="system">Инструкция для ассистента</label><textarea id="system" data-testid="input-system" rows={4} className="text-input" maxLength={12000} {...form.register("system")}/><p className="field-hint">Тон общения, язык и правила для всех новых ответов.</p></div></> : <div className="appearance-options">{[["light", "Светлая", Sun], ["dark", "Тёмная", Moon], ["system", "Как в системе", Monitor]].map(([id, label, Icon]: any) => <button type="button" key={id} data-testid={`theme-${id}`} className={`theme-option ${form.watch("theme") === id ? "chosen" : ""}`} onClick={() => { form.setValue("theme", id); setSaved(false); }}><div className={`theme-preview ${id}`}><div/><section><span/><span/><span/></section></div><div><Icon size={16}/>{label}{form.watch("theme") === id && <Check size={16}/>}</div></button>)}</div>}
       {error && <p className="inline-error" role="alert">{error}</p>}<div className="dialog-actions"><span className="saved-status" role="status">{saved && <><Check size={16}/>Изменения сохранены</>}</span><button type="submit" className="primary-button" data-testid="button-save-settings" disabled={form.formState.isSubmitting}>{form.formState.isSubmitting && <Loader2 className="spin" size={16}/>}Сохранить настройки</button></div>
     </form></Form>}
   </DialogContent></Dialog>;

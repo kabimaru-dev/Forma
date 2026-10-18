@@ -31,7 +31,22 @@ class Storage implements IStorage {
     return db.update(chats).set({ ...patch, updatedAt: Date.now() }).where(and(eq(chats.id, id), eq(chats.owner, owner))).returning().get();
   }
   delete(owner: string, id: string) { db.delete(chats).where(and(eq(chats.id, id), eq(chats.owner, owner))).run(); }
-  settings(owner: string) { return { ...defaultSettings, ...db.select().from(preferences).where(eq(preferences.owner, owner)).get()?.value }; }
+  settings(owner: string) {
+    const stored = db.select().from(preferences).where(eq(preferences.owner, owner)).get()?.value;
+    if (!stored) return { ...defaultSettings };
+    // One-time upgrade of the original 0/0 defaults. Subsequent user choices,
+    // including an intentional 0 (manual mode), are never overridden.
+    if (!stored.contextDefaultsApplied) {
+      const migrated = { ...defaultSettings, ...stored, contextDefaultsApplied: true };
+      if ((stored.contextStep ?? 0) === 0 && (stored.contextPreload ?? 0) === 0) {
+        migrated.contextStep = 16384;
+        migrated.contextPreload = 8192;
+      }
+      this.saveSettings(owner, migrated);
+      return migrated;
+    }
+    return { ...defaultSettings, ...stored };
+  }
   saveSettings(owner: string, value: Settings) {
     db.insert(preferences).values({ owner, value }).onConflictDoUpdate({ target: preferences.owner, set: { value } }).run();
     return value;
