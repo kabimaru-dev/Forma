@@ -185,3 +185,6 @@ model_choices:
     label: "Model 07"
     enabled: false
     model: ""
+
+# Локальная модель распознавания фотографий (впишите имя сами).
+vision_model: ""

@@ -5,7 +5,7 @@
  * This small strict parser supports the documented mapping-only YAML subset
  * (indentation, string scalars, booleans, comments), not arbitrary YAML syntax.
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, appendFileSync, copyFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export const LEVELS = ["minimal", "moderate", "intensive", "extreme"] as const;
@@ -38,7 +38,21 @@ function readConfig(): Record<string, unknown> {
   // Always resolve relative to the app's working directory; no arbitrary paths.
   const local = resolve(process.cwd(), "config/modes.yaml");
   const source = existsSync(local) ? local : resolve(process.cwd(), "config/modes.example.yaml");
-  const text = readFileSync(source, "utf8");
+  let text = readFileSync(source, "utf8");
+  // Migrate older installations once. Preserve every existing model assignment:
+  // code-only updates intentionally never replace the user's modes.yaml.
+  if (source === local && !/^vision_model:/m.test(text)) {
+    const suffix = `${text.endsWith("\n") ? "" : "\n"}\n# Локальная модель распознавания фотографий (впишите имя сами).\nvision_model: ""\n`;
+    try {
+      const backup = resolve(process.cwd(), "config/modes.before-vision.bak");
+      if (!existsSync(backup)) copyFileSync(local, backup);
+      appendFileSync(local, suffix, "utf8");
+      text += suffix;
+    } catch {
+      // Keep existing mode routing usable on read-only installations.
+      // The user can add the one documented line manually instead.
+    }
+  }
   const root: Record<string, unknown> = {};
   const stack: Array<{ indent: number; map: Record<string, unknown> }> = [{ indent: -1, map: root }];
   for (const [i, line] of text.split(/\r?\n/).entries()) {
@@ -122,6 +136,15 @@ function configuration() {
     }
   }
   return { enabled, reasoningEnabled, speedEnabled, custom, available, models, modelChoices, overrides };
+}
+
+/** Dedicated private Ollama model for describing uploaded photographs. */
+export function visionModel(): string {
+  const raw = readConfig().vision_model;
+  if (typeof raw !== "string" || !raw.trim()) return "";
+  const name = raw.trim();
+  if (!modelName.test(name)) throw new Error("Неверное имя vision_model в config/modes.yaml.");
+  return name;
 }
 
 export function publicModes() {

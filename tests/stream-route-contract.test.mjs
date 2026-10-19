@@ -18,7 +18,7 @@ const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
   fileName: file, compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText.replace(/^import .*;\r?\n/gm, '').replace('export async function registerRoutes', 'async function registerRoutes');
 
-function fixture(chunks, { delay = 0 } = {}) {
+function fixture(chunks, { delay = 0, scripts = null } = {}) {
   const state = new Map();
   const generatedCounts = new Map();
   const generatedUsage = {
@@ -51,27 +51,34 @@ function fixture(chunks, { delay = 0 } = {}) {
   const Readable = globalThis.ReadableStream;
   let lastRequest = null;
   let tokenCalls = 0;
+  let sendCalls = 0;
+  const requests = [];
   const fetch = async (_url, opts) => {
     lastRequest = JSON.parse(opts.body);
     if (lastRequest.stream === false) {
       tokenCalls++;
       return new Response(JSON.stringify({ prompt_eval_count: 420, eval_count: 1 }), { headers: { 'Content-Type': 'application/json' } });
     }
+    const script = scripts ? scripts[sendCalls] : chunks;
+    sendCalls++;
+    requests.push(lastRequest);
+    if (script instanceof Error) throw script;
     return new Response(new Readable({
       start(c) {
-        const write = () => { for (const chunk of chunks) c.enqueue(new TextEncoder().encode(JSON.stringify(chunk) + '\n')); c.close(); };
+        const write = () => { for (const chunk of script) c.enqueue(new TextEncoder().encode(JSON.stringify(chunk) + '\n')); c.close(); };
         if (delay) setTimeout(write, delay); else write();
       },
     }), { headers: { 'Content-Type': 'application/x-ndjson' } });
   };
-  const create = new Function('generatedUsage', 'contextWindows', 'preloadModel', 'waitForModelPreload', 'z', 'storage', 'randomUUID', 'sendSchema', 'checkOllama', 'normalizeOllamaUrl', 'ollamaUrl', 'previewMode', 'connectionError', 'registerComputerRoutes', 'registerAuthRoutes', 'currentUser', 'fetch', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', `const isFormaMode = () => false;\n${code}\nreturn registerRoutes;`);
+  const create = new Function('generatedUsage', 'contextWindows', 'preloadModel', 'waitForModelPreload', 'retryableOllamaFailure', 'reconnectDelay', 'cancellablePause', 'reconnectingStatus', 'ensureLocalOllama', 'z', 'storage', 'randomUUID', 'sendSchema', 'checkOllama', 'normalizeOllamaUrl', 'ollamaUrl', 'previewMode', 'connectionError', 'registerComputerRoutes', 'registerAuthRoutes', 'currentUser', 'fetch', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', `const isFormaMode = () => false;\n${code}\nreturn registerRoutes;`);
   const contextWindows = {
     current: (_id, _model, settings) => settings.context,
     display: (_id, settings) => settings.context,
     record: () => ({ changed: false }),
     remove() {},
   };
-  const route = create(generatedUsage, contextWindows, async () => {}, async () => {}, z, storage, () => 'assistant-id', valid, () => {}, () => {}, () => 'http://localhost:11434', false, (e) => String(e?.message || e), () => {}, () => {}, () => ({id:'u'}), fetch,
+  const retryableOllamaFailure = error => ['fetch failed', 'Поток Ollama оборвался до завершения ответа.'].includes(error?.message);
+  const route = create(generatedUsage, contextWindows, async () => {}, async () => {}, retryableOllamaFailure, () => 1, () => Promise.resolve(), async () => ({ connected: true, backend: true, models: [], host: 'http://localhost:11434' }), () => false, z, storage, () => 'assistant-id', valid, () => {}, () => {}, () => 'http://localhost:11434', false, (e) => String(e?.message || e), () => {}, () => {}, () => ({id:'u'}), fetch,
     (fn, ms) => setInterval(fn, Math.min(ms, 25)), clearInterval, setTimeout, clearTimeout);
   const out = { text: '' };
   class FakeResponse extends EventEmitter {
@@ -87,6 +94,13 @@ function fixture(chunks, { delay = 0 } = {}) {
     state, out, generatedUsage,
     get lastRequest() { return lastRequest; },
     get tokenCalls() { return tokenCalls; },
+    get sendCalls() { return sendCalls; },
+    get requests() { return requests; },
+    async status() {
+      await route({}, app);
+      await handlers.get('/api/status')({ params: {} }, new FakeResponse());
+      return out.json;
+    },
     async runEdit(messages, messageId, body) {
       if (messages) state.set('chat', { ...state.get('chat'), messages: structuredClone(messages) });
       await route({}, app);
@@ -220,4 +234,49 @@ test('editing user and assistant messages persists revisions and selected versio
   assert.deepEqual(result.saved[0].revisions, ['Original question','Edited question']);
   result = await f.runEdit(null, 'one', { revisionIndex: 1 });
   assert.equal(result.saved[0].content, 'Edited question');
+});
+
+
+test('automatic status endpoint returns model connection details without user action', async () => {
+  const f = fixture([{ message: { content: 'ok' } }, { done: true }]);
+  const status = await f.status();
+  assert.equal(status.connected, true);
+  assert.equal(status.backend, true);
+});
+
+test('temporary upstream connection failure reconnects and sends a single user message', async () => {
+  const f = fixture([], { scripts: [new Error('fetch failed'), [
+    { message: { content: 'Recovered answer' } }, { done: true, eval_count: 12 },
+  ]] });
+  const { events, saved } = await f.run();
+  assert.equal(f.sendCalls, 2);
+  assert.equal(events.filter(e => e.type === 'reconnecting').length, 1);
+  assert.equal(saved.filter(m => m.role === 'user').length, 1);
+  assert.equal(saved.at(-1).content, 'Recovered answer');
+  assert.equal(saved.at(-1).interrupted, false);
+  assert.equal(events.at(-1).complete, true);
+});
+
+test('lost stream after partial response resumes, preserving previous text without fake n_gen', async () => {
+  const f = fixture([], { scripts: [
+    [{ message: { content: 'First part. ' } }],
+    [{ message: { content: 'Second part.' } }, { done: true, eval_count: 88 }],
+  ] });
+  const { events, saved } = await f.run();
+  assert.equal(f.sendCalls, 2);
+  assert.match(f.requests[1].messages.at(-1).content, /Продолжи/);
+  assert.equal(saved.at(-1).content, 'First part. Second part.');
+  assert.equal(events.at(-1).complete, true);
+  assert.equal(events.some(e => e.type === 'usage'), false, 'partial attempt has no authoritative eval_count');
+  const { response } = await f.runTokens(saved);
+  assert.equal(response.tokens, null);
+});
+
+test('repeated upstream network failures are bounded at three attempts', async () => {
+  const f = fixture([], { scripts: [new Error('fetch failed'), new Error('fetch failed'), new Error('fetch failed')] });
+  const { events, saved } = await f.run();
+  assert.equal(f.sendCalls, 3);
+  assert.equal(events.filter(e => e.type === 'reconnecting').length, 2);
+  assert.equal(events.at(-1).complete, false);
+  assert.equal(saved.filter(m => m.role === 'user').length, 1);
 });

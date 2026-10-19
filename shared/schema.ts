@@ -24,6 +24,7 @@ export const settingsSchema = z.object({
   contextStep: z.number().int().min(0).max(32768).default(16384),
   contextPreload: z.number().int().min(0).max(16384).default(8192),
   contextDefaultsApplied: z.boolean().default(true),
+  contextManualDefaultsApplied: z.boolean().default(true),
   system: z.string().max(12000),
   theme: z.enum(["system", "light", "dark"]),
   model: z.string().max(150),
@@ -34,4 +35,15 @@ export const insertPreferenceSchema = createInsertSchema(preferences);
 export type InsertPreference = z.infer<typeof insertPreferenceSchema>;
 export type Preference = typeof preferences.$inferSelect;
 export { defaultSettings } from "./defaults";
-export const sendSchema = z.object({ content: z.string().max(100000).default(""), model: z.string().min(1).max(150), retry: z.boolean().default(false) });
+export const imageAttachmentSchema = z.object({
+  name: z.string().min(1).max(255),
+  mimeType: z.enum(["image/jpeg", "image/png", "image/webp", "image/gif"]),
+  data: z.string().min(8).max(12_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+});
+export type ImageAttachment = z.infer<typeof imageAttachmentSchema>;
+export const sendSchema = z.object({
+  content: z.string().max(100000).default(""),
+  model: z.string().min(1).max(150),
+  retry: z.boolean().default(false),
+  images: z.array(imageAttachmentSchema).default([]),
+});

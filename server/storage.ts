@@ -36,11 +36,16 @@ class Storage implements IStorage {
     if (!stored) return { ...defaultSettings };
     // One-time upgrade of the original 0/0 defaults. Subsequent user choices,
     // including an intentional 0 (manual mode), are never overridden.
-    if (!stored.contextDefaultsApplied) {
-      const migrated = { ...defaultSettings, ...stored, contextDefaultsApplied: true };
-      if ((stored.contextStep ?? 0) === 0 && (stored.contextPreload ?? 0) === 0) {
+    if (!stored.contextDefaultsApplied || !stored.contextManualDefaultsApplied) {
+      const migrated = { ...defaultSettings, ...stored, contextDefaultsApplied: true, contextManualDefaultsApplied: true };
+      if (!stored.contextDefaultsApplied && (stored.contextStep ?? 0) === 0 && (stored.contextPreload ?? 0) === 0) {
         migrated.contextStep = 16384;
         migrated.contextPreload = 8192;
+      }
+      // One-time upgrade from the previous 8K default for existing accounts.
+      // Preserve other selected manual values and all future user changes.
+      if (!stored.contextManualDefaultsApplied && (stored.context ?? 8192) === 8192) {
+        migrated.context = 262144;
       }
       this.saveSettings(owner, migrated);
       return migrated;

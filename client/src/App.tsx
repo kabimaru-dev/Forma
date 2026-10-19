@@ -18,7 +18,8 @@ import Computer from "./Computer";
 import ModePicker, { modeId, readableMode, type Level, type Reasoning, type Speed, type ModeSelection, type ModesPublic } from "@/components/ModePicker";
 
 type Model = { name: string; size: number; remote_host?: string; details?: { parameter_size?: string; quantization_level?: string; family?: string } };
-type Status = { connected: boolean; host: string; models: Model[]; backend?: boolean; message?: string; editable?: boolean; preview?: boolean };
+type Status = { connected: boolean; reconnecting?: boolean; host: string; models: Model[]; backend?: boolean; message?: string; editable?: boolean; preview?: boolean };
+type PendingAttachment = { id: string; name: string; kind: "text" | "image"; text?: string; data?: string; mimeType?: "image/jpeg" | "image/png" | "image/webp" | "image/gif" };
 type ChatSummary = Omit<Chat, "owner" | "messages"> & { preview: string; count: number };
 
 // llama.cpp n_gen corresponds to Ollama eval_count, summed over replies whose
@@ -66,17 +67,25 @@ function Workspace({ user }: { user: { id: string; username: string } }) {
   const isComputer = location === "/computer";
   const { open, toggleSidebar, setOpenMobile, isMobile } = useSidebar();
   const [busy, setBusy] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const settingsQuery = useQuery<Settings>({ queryKey: ["/api/settings"] });
   const settings = settingsQuery.data || defaultSettings;
   // Ollama may be unavailable to the short status probe during a large load.
   // Don't keep probing while an answer is being streamed.
-  const statusQuery = useQuery<Status>({ queryKey: ["/api/status"], refetchInterval: busy ? false : 60000 });
+  const statusQuery = useQuery<Status>({
+    queryKey: ["/api/status"],
+    // Retry automatically when Ollama starts/restarts. During active
+    // generation avoid contending with a model that is still loading.
+    refetchInterval: query => busy ? false : (query.state.data?.connected && !query.state.data?.reconnecting ? 25000 : 3000),
+    refetchOnWindowFocus: true,
+    staleTime: 0,
+  });
   const status: Status | undefined = statusQuery.isError ? { connected: false, backend: false, host: "", models: [], editable: false, message: (statusQuery.error as Error).message } : statusQuery.data;
   const chatsQuery = useQuery<ChatSummary[]>({ queryKey: ["/api/chats"] });
   const chats = chatsQuery.data || [];
   const chatQuery = useQuery<Chat>({ queryKey: ["/api/chats", chatId || ""], enabled: !!chatId });
   const [draft, setDraft] = useState("");
-  const [attachment, setAttachment] = useState<{ name: string; text: string } | null>(null);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState("connection");
   const [helpOpen, setHelpOpen] = useState(false);
@@ -249,27 +258,44 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
     try { await navigator.clipboard.writeText(text); setNotice("Скопировано"); }
     catch { setNotice("Браузер не разрешил копирование. Выделите текст вручную."); }
   }
-  async function attach(file: File | undefined) {
-    if (!file) return;
-    if (file.size > 100000) { setError("Прикрепите текстовый файл до 100 КБ."); return; }
-    if (!/\.(txt|md|csv|json|js|ts|tsx|jsx|py|html|css|yml|yaml|log)$/i.test(file.name)) { setError("Поддерживаются текстовые файлы, Markdown, CSV, JSON и исходный код."); return; }
-    const text = await file.text();
-    if (text.includes("\0")) { setError("Этот файл содержит бинарные данные. Выберите текстовый файл."); return; }
-    setAttachment({ name: file.name, text }); setError("");
-    if (fileInput.current) fileInput.current.value = "";
+  async function attach(files: FileList | File[] | null | undefined) {
+    if (!files?.length) return;
+    const accepted: PendingAttachment[] = [];
+    try {
+      for (const file of Array.from(files)) {
+        if (file.type.startsWith("image/") && ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(file.type)) {
+          if (file.size > 8 * 1024 * 1024) throw new Error(`«${file.name}»: максимальный размер фотографии 8 МБ.`);
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(file);
+          });
+          const data = dataUrl.slice(dataUrl.indexOf(",") + 1);
+          accepted.push({ id: crypto.randomUUID(), name: file.name, kind: "image", mimeType: file.type as PendingAttachment["mimeType"], data });
+        } else if (/\.(txt|md|csv|json|js|ts|tsx|jsx|py|html|css|yml|yaml|log)$/i.test(file.name)) {
+          if (file.size > 100000) throw new Error(`«${file.name}»: максимальный размер текстового файла 100 КБ.`);
+          const text = await file.text();
+          if (text.includes("\0")) throw new Error(`«${file.name}» содержит бинарные данные.`);
+          accepted.push({ id: crypto.randomUUID(), name: file.name, kind: "text", text });
+        } else throw new Error(`Неподдерживаемый тип файла: ${file.name}.`);
+      }
+      setAttachments(previous => [...previous, ...accepted]);
+      setError("");
+    } catch (e: any) { setError(e?.message || "Не удалось добавить файлы."); }
+    finally { if (fileInput.current) fileInput.current.value = ""; }
   }
   async function send(retry = false) {
-    if (busy || (!retry && !draft.trim() && !attachment)) return;
+    if (busy || (!retry && !draft.trim() && !attachments.length)) return;
     if (status?.backend === false) { setError("Сервер Forma недоступен. Ваш текст останется здесь."); return; }
     if (modesQuery.data && (modeSelection.model && modeSelection.model !== "default"
       ? !modesQuery.data.modelChoices?.[modeSelection.model]?.enabled || !modesQuery.data.levels[modeSelection.level] || !modesQuery.data.reasoning[modeSelection.level][modeSelection.reasoning] || !modesQuery.data.speed[modeSelection.speed]
       : !modesQuery.data.available?.[modeSelection.level]?.[modeSelection.reasoning]?.[modeSelection.speed])) {
       setError("Режим не настроен: укажите модель в config/modes.yaml на сервере Forma."); return;
     }
-    const content = `${draft.trim()}${attachment ? `\n\nФайл: ${attachment.name}\n\`\`\`\n${attachment.text}\n\`\`\`` : ""}`.trim();
+    const content = `${draft.trim()}${attachments.filter(f => f.kind === "text").map(f => `\n\nФайл: ${f.name}\n\`\`\`\n${f.text}\n\`\`\``).join("")}`.trim();
+    const images = attachments.filter(f => f.kind === "image").map(f => ({ name: f.name, mimeType: f.mimeType!, data: f.data! }));
+    if (images.reduce((total, f) => total + f.data.length * .75, 0) > 24 * 1024 * 1024) { setError("Максимальный общий размер фотографий — 24 МБ за сообщение."); return; }
     if (content.length > 100000) { setError("Сообщение вместе с файлом должно быть короче 100 000 символов."); return; }
     setError(""); setBusy(true);
-    if (!retry) { setDraft(""); setAttachment(null); }
+    if (!retry) { setDraft(""); setAttachments([]); }
     let id = chatId;
     const aborter = new AbortController(); controller.current = aborter;
     let started = false;
@@ -289,7 +315,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
     ] });
     try {
       if (!id) {
-        const res = await apiRequest("POST", "/api/chats", { title: content.slice(0, 65) || "Новый диалог", model: sendModel });
+        const res = await apiRequest("POST", "/api/chats", { title: content.slice(0, 65) || images[0]?.name || "Новый диалог", model: sendModel });
         const created = await res.json(); id = created.id; navigate(`/chat/${id}`);
       }
       const activeId = id!;
@@ -297,8 +323,11 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
       // Never lose the typed message when a request fails before the stream begins.
       // The backend stores the user message before contacting Ollama.
       await queryClient.invalidateQueries({ queryKey: ["/api/chats"], exact: true });
-      const response = await apiRequest("POST", `/api/chats/${id}/send`, { content, model: sendModel, retry }, aborter.signal);
+      const response = await apiRequest("POST", `/api/chats/${id}/send`, { content, model: sendModel, retry, images: retry ? [] : images }, aborter.signal);
       await readStream(response, event => {
+        if (event.type === "vision") setNotice(`Обработка фотографий: ${event.current} / ${event.total}`);
+        if (event.type === "reconnecting") setReconnecting(true);
+        if (event.type === "context" || event.type === "token" || event.type === "thinking" || event.type === "done") setReconnecting(false);
         if (event.type === "start") {
           started = true;
           if (Array.isArray(event.messages)) history = event.messages;
@@ -332,12 +361,15 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
             : { id: id!, owner: user.id, title: content.slice(0, 65) || "Новый диалог", model: sendModel, updatedAt: Date.now(), messages: local });
         } else if (!retry && !started && !aborter.signal.aborted) {
           // The request may have failed before Ollama accepted the prompt.
-          setDraft(content);
+          setDraft(draft);
+          setAttachments(attachments);
         }
         try { await queryClient.invalidateQueries({ queryKey: key, exact: true }); } catch {}
         try { await queryClient.invalidateQueries({ queryKey: ["/api/chats"], exact: true }); } catch {}
       }
       setBusy(false);
+      setReconnecting(false);
+      void statusQuery.refetch();
       // A failed refresh must not make already received tokens disappear.
       if (id && (assistant.content || assistant.thinking)) {
         const cached = queryClient.getQueryData<Chat>(["/api/chats", id]);
@@ -357,12 +389,12 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
     onOpenSettings={() => openSettings("generation")}
   />;
   const composer = <div className="composer-wrap">
-    <div className={`composer ${busy ? "generating" : ""}`} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); attach(e.dataTransfer.files[0]); }}>
-      {attachment && <div className="attachment" data-testid="text-attachment"><FileText size={15}/><span>{attachment.name}</span><IconButton label="Убрать файл" onClick={() => setAttachment(null)}><X size={14}/></IconButton></div>}
+    <div className={`composer ${busy ? "generating" : ""}`} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); void attach(e.dataTransfer.files); }}>
+      {attachments.length > 0 && <div className="flex flex-wrap gap-2" data-testid="attachments">{attachments.map(file => <div className="attachment" key={file.id} data-testid="file-attachment"><FileText size={15}/><span>{file.name}</span><IconButton label="Убрать файл" onClick={() => setAttachments(previous => previous.filter(f => f.id !== file.id))}><X size={14}/></IconButton></div>)}</div>}
       <textarea ref={textarea} aria-label="Сообщение" data-testid="input-message" value={draft} onChange={e => { setDraft(e.target.value); e.target.style.height = "auto"; e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`; }} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} placeholder="Спросите о чём угодно или поделитесь идеей…" rows={2}/>
-      <div className="composer-tools"><div className="flex items-center gap-1"><IconButton label="Прикрепить текстовый файл" testid="button-attach" onClick={() => fileInput.current?.click()} disabled={busy}><Paperclip size={19}/></IconButton></div><div className="flex items-center gap-2">{picker}{busy ? <button className="send-button stop" aria-label="Остановить ответ" data-testid="button-stop" onClick={() => controller.current?.abort()}><Square size={17} fill="currentColor"/></button> : <button className="send-button" aria-label="Отправить сообщение" data-testid="button-send" disabled={!draft.trim() && !attachment} onClick={() => send()}><ArrowUp size={21}/></button>}</div></div>
+      <div className="composer-tools"><div className="flex items-center gap-1"><IconButton label="Прикрепить файлы или фотографии" testid="button-attach" onClick={() => fileInput.current?.click()} disabled={busy}><Paperclip size={19}/></IconButton></div><div className="flex items-center gap-2">{picker}{busy ? <button className="send-button stop" aria-label="Остановить ответ" data-testid="button-stop" onClick={() => controller.current?.abort()}><Square size={17} fill="currentColor"/></button> : <button className="send-button" aria-label="Отправить сообщение" data-testid="button-send" disabled={!draft.trim() && !attachments.length} onClick={() => send()}><ArrowUp size={21}/></button>}</div></div>
     </div>
-    <input ref={fileInput} type="file" className="hidden" aria-label="Текстовый файл" data-testid="input-file" accept=".txt,.md,.csv,.json,.js,.ts,.tsx,.jsx,.py,.html,.css,.yml,.yaml,.log" onChange={e => attach(e.target.files?.[0])}/>
+    <input ref={fileInput} type="file" multiple className="hidden" aria-label="Файлы и фотографии" data-testid="input-file" accept="image/jpeg,image/png,image/webp,image/gif,.txt,.md,.csv,.json,.js,.ts,.tsx,.jsx,.py,.html,.css,.yml,.yaml,.log" onChange={e => void attach(e.target.files)}/>
     {error && <div className="inline-error" role="alert" data-testid="error-chat">{error}<IconButton label="Скрыть ошибку" onClick={() => setError("")}><X size={14}/></IconButton></div>}
   </div>;
 
@@ -387,15 +419,15 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
       <SidebarFooter className="side-footer">
         <button className="ollama-card" data-testid="button-connect-card" onClick={() => openSettings()}>
           <div className="ollama-card-top"><span className="connection-mark"><Plug size={17}/></span><span>Ваш AI. Ваши правила.</span></div>
-          <p>{status?.connected ? `${models.length} моделей доступно в Ollama` : "Подключите локальные модели и начните разговор."}</p>
-          <span className="connect-link">{status?.connected ? "Ollama подключена" : "Подключить Ollama"}<ArrowRight size={14}/></span>
+          <p>{status?.connected ? `${models.length} моделей доступно в Ollama` : "Forma подключится к Ollama автоматически, как только сервер станет доступен."}</p>
+          <span className="connect-link">{status?.connected ? "Ollama подключена" : "Автоподключение Ollama"}<ArrowRight size={14}/></span>
         </button>
         <div className="side-footer-links"><button data-testid="button-help" onClick={() => { setOpenMobile(false); setHelpOpen(true); }}><CircleHelp size={17}/>Как это работает</button><button data-testid="button-settings" onClick={() => { setOpenMobile(false); openSettings(); }}><Settings2 size={17}/>Настройки</button></div>
         <div className="profile"><span className="profile-avatar">{user.username.slice(0, 1).toUpperCase()}</span><div>{user.username}<small>Личный аккаунт</small></div><IconButton label="Выйти" testid="button-logout" onClick={logout}><LogOut size={17}/></IconButton><IconButton label={theme === "light" ? "Тёмная тема" : "Светлая тема"} testid="button-theme-sidebar" onClick={changeTheme}>{theme === "light" ? <Moon size={17}/> : <Sun size={17}/>}</IconButton></div>
       </SidebarFooter>
     </Sidebar>
     <main className="main-panel">
-      <header className="topbar"><div className="topbar-left">{(!open || isMobile) && <IconButton label="Открыть меню" testid="button-open-sidebar" onClick={toggleSidebar}><PanelLeft size={19}/></IconButton>}<span className="page-breadcrumb">Личное пространство</span><ChevronRight className="breadcrumb-chevron" size={13}/><span className="page-name">{isComputer ? "Computer" : current?.title || "Новый диалог"}</span><span className="forma-version" data-testid="forma-version" title="Версия Forma">v5.5</span></div><div className="topbar-right">{!isComputer && <button type="button" className="forma-token-counter" data-testid="token-counter" aria-label={tokenLabel} title={tokenHint} onClick={() => usageQuery.refetch()} disabled={!chatId || busy || usageQuery.isFetching}><span className="token-counter-label">Токенов:</span> <span>{tokenLabel.slice("Токенов: ".length)}</span></button>}<button className={`connection-status ${status?.connected ? "online" : ""}`} data-testid="status-connection" onClick={() => openSettings()}><span className="status-dot"/><span>{statusQuery.isFetching && !status ? "Проверяем Ollama" : status?.backend === false ? "Сервер Forma недоступен" : status?.connected ? "Ollama подключена" : "Ollama не подключена"}</span></button><span className="topbar-divider"/><IconButton label={theme === "light" ? "Тёмная тема" : "Светлая тема"} testid="button-theme" onClick={changeTheme}>{theme === "light" ? <Moon size={18}/> : <Sun size={18}/>}</IconButton></div></header>
+      <header className="topbar"><div className="topbar-left">{(!open || isMobile) && <IconButton label="Открыть меню" testid="button-open-sidebar" onClick={toggleSidebar}><PanelLeft size={19}/></IconButton>}<span className="page-breadcrumb">Личное пространство</span><ChevronRight className="breadcrumb-chevron" size={13}/><span className="page-name">{isComputer ? "Computer" : current?.title || "Новый диалог"}</span><span className="forma-version" data-testid="forma-version" title="Версия Forma">v5.5</span></div><div className="topbar-right">{!isComputer && <button type="button" className="forma-token-counter" data-testid="token-counter" aria-label={tokenLabel} title={tokenHint} onClick={() => usageQuery.refetch()} disabled={!chatId || busy || usageQuery.isFetching}><span className="token-counter-label">Токенов:</span> <span>{tokenLabel.slice("Токенов: ".length)}</span></button>}<button className={`connection-status ${status?.connected ? "online" : ""}`} data-testid="status-connection" onClick={() => openSettings()}><span className="status-dot"/><span>{statusQuery.isFetching && !status ? "Проверяем Ollama" : status?.backend === false ? "Сервер Forma недоступен" : reconnecting || status?.reconnecting ? "Восстанавливаем Ollama…" : status?.connected ? "Ollama подключена" : "Ожидаем Ollama…"}</span></button><span className="topbar-divider"/><IconButton label={theme === "light" ? "Тёмная тема" : "Светлая тема"} testid="button-theme" onClick={changeTheme}>{theme === "light" ? <Moon size={18}/> : <Sun size={18}/>}</IconButton></div></header>
       {isComputer ? <Computer models={models} model={model} connected={!!status?.connected} connect={() => openSettings()}/> : chatId ? <>
         <div className="conversation-scroll" ref={scroll}>
           <div className="messages">
@@ -560,7 +592,7 @@ function goTo(path: string) { navigate(path); setOpenMobile(false); }
       </div>}
     </main>
     <SettingsDialog open={settingsOpen} setOpen={setSettingsOpen} tab={settingsTab} setTab={setSettingsTab} settings={settings} save={saveSettings} status={status} refreshing={statusQuery.isFetching} refresh={() => statusQuery.refetch()} />
-    <Dialog open={helpOpen} onOpenChange={setHelpOpen}><DialogContent className="app-dialog help-dialog"><DialogHeader><DialogTitle>Знакомьтесь, Forma</DialogTitle><DialogDescription>Знакомый чат. Модели, которые выбираете вы.</DialogDescription></DialogHeader><div className="help-content"><div className="help-step"><span>01</span><div><h3>Запустите Ollama</h3><p>Установите Ollama на свой компьютер и откройте приложение. Сервер Forma должен работать на том же компьютере или иметь доступ к вашей Ollama.</p><a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer" data-testid="link-ollama-download">Скачать Ollama<ExternalLink size={14}/></a></div></div><div className="help-step"><span>02</span><div><h3>Добавьте свою модель</h3><p>Установите модели через Ollama на своём компьютере и задайте их в config/modes.yaml на сервере Forma.</p></div></div><div className="help-step"><span>03</span><div><h3>Начните разговор</h3><p>Выберите уровень Forma, напишите сообщение или прикрепите текстовый файл. История сохраняется в базе на сервере Forma.</p></div></div><div className="shortcuts"><span>Отправить <kbd>Enter</kbd></span><span>Новая строка <kbd>Shift + Enter</kbd></span><span>Поиск <kbd>Ctrl / ⌘ K</kbd></span></div></div></DialogContent></Dialog>
+    <Dialog open={helpOpen} onOpenChange={setHelpOpen}><DialogContent className="app-dialog help-dialog"><DialogHeader><DialogTitle>Знакомьтесь, Forma</DialogTitle><DialogDescription>Знакомый чат. Модели, которые выбираете вы.</DialogDescription></DialogHeader><div className="help-content"><div className="help-step"><span>01</span><div><h3>Запустите Ollama</h3><p>Установите Ollama на свой компьютер и откройте приложение. Сервер Forma должен работать на том же компьютере или иметь доступ к вашей Ollama.</p><a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer" data-testid="link-ollama-download">Скачать Ollama<ExternalLink size={14}/></a></div></div><div className="help-step"><span>02</span><div><h3>Добавьте свою модель</h3><p>Установите модели через Ollama на своём компьютере и задайте их в config/modes.yaml на сервере Forma.</p></div></div><div className="help-step"><span>03</span><div><h3>Начните разговор</h3><p>Выберите уровень Forma, напишите сообщение или прикрепите файлы и фотографии. Для фотографий задайте vision_model в config/modes.yaml. История сохраняется в базе на сервере Forma.</p></div></div><div className="shortcuts"><span>Отправить <kbd>Enter</kbd></span><span>Новая строка <kbd>Shift + Enter</kbd></span><span>Поиск <kbd>Ctrl / ⌘ K</kbd></span></div></div></DialogContent></Dialog>
     <Dialog open={searchOpen} onOpenChange={setSearchOpen}><DialogContent className="app-dialog search-dialog"><DialogHeader><DialogTitle>Найти диалог</DialogTitle><DialogDescription>По названию или тексту сообщений</DialogDescription></DialogHeader><div className="search-input"><Search size={19}/><input autoFocus aria-label="Поиск диалогов" placeholder="О чём мы говорили?" data-testid="input-search" value={search} onChange={e => setSearch(e.target.value)}/></div><div className="search-results">{chats.filter(c => `${c.title} ${c.preview}`.toLowerCase().includes(search.toLowerCase())).map(c => <button key={c.id} data-testid={`search-result-${c.id}`} onClick={() => { navigate(`/chat/${c.id}`); setSearchOpen(false); }}><MessageSquare size={18}/><span>{c.title}<small>{c.preview.slice(0, 85) || "Пока без сообщений"}</small></span><ArrowUpRight size={16}/></button>)}{!chats.filter(c => `${c.title} ${c.preview}`.toLowerCase().includes(search.toLowerCase())).length && <div className="search-empty"><Search size={25}/><p>{search ? "Такого диалога пока нет" : "Ваши диалоги появятся здесь"}</p><small>{search ? "Попробуйте другое слово." : "Начните новый чат, и мы сохраним его для вас."}</small></div>}</div></DialogContent></Dialog>
     <Dialog open={!!rename} onOpenChange={v => { if (!v) setRename(null); }}><DialogContent className="app-dialog compact-dialog"><DialogHeader><DialogTitle>Название диалога</DialogTitle><DialogDescription>Так его будет проще найти в истории.</DialogDescription></DialogHeader><input className="text-input" aria-label="Название" value={renameText} onChange={e => setRenameText(e.target.value)} data-testid="input-rename" maxLength={120}/>{modalError && <p className="inline-error" role="alert">{modalError}</p>}<button className="primary-button" data-testid="button-save-rename" disabled={!renameText.trim() || operation} onClick={async () => { setOperation(true); try { await apiRequest("PATCH", `/api/chats/${rename!.id}`, { title: renameText }); await queryClient.invalidateQueries({ queryKey: ["/api/chats"] }); setRename(null); } catch(e: any) { setModalError(e.message); } finally { setOperation(false); } }}>Сохранить</button></DialogContent></Dialog>
     <Dialog open={!!deleteChat} onOpenChange={v => { if (!v) setDeleteChat(null); }}><DialogContent className="app-dialog compact-dialog"><DialogHeader><DialogTitle>Удалить диалог?</DialogTitle><DialogDescription>«{deleteChat?.title}» и все его сообщения будут удалены без возможности восстановления.</DialogDescription></DialogHeader>{modalError && <p role="alert" className="inline-error">{modalError}</p>}<div className="dialog-actions"><button className="secondary-button" data-testid="button-cancel-delete" onClick={() => setDeleteChat(null)}>Оставить</button><button className="primary-button danger" data-testid="button-confirm-delete" disabled={operation} onClick={async () => { setOperation(true); try { await apiRequest("DELETE", `/api/chats/${deleteChat!.id}`); if (chatId === deleteChat!.id) newChat(); await queryClient.invalidateQueries({ queryKey: ["/api/chats"] }); setDeleteChat(null); } catch(e: any) { setModalError(e.message); } finally { setOperation(false); } }}>Удалить диалог</button></div></DialogContent></Dialog>
@@ -573,29 +605,55 @@ function SettingsDialog({ open, setOpen, tab, setTab, settings, save, status, re
   const [saved, setSaved] = useState(false), [error, setError] = useState("");
   const [host, setHost] = useState(""), [checking, setChecking] = useState(false), [connection, setConnection] = useState<Status | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const manualControl = form.register("context", { valueAsNumber: true });
   const stepControl = form.register("contextStep", { valueAsNumber: true });
   const preloadControl = form.register("contextPreload", { valueAsNumber: true });
-  function saveSlider(name: "contextStep" | "contextPreload", value: number) {
+  // Keep writes in order so a slow earlier request cannot overwrite a newer choice.
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const sliderRevision = useRef(0);
+  const pendingSlider = useRef<{ values: Settings; revision: number } | null>(null);
+  function flushSlider() {
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    const pending = pendingSlider.current;
+    if (!pending) return;
+    pendingSlider.current = null;
+    void queueSettings(pending.values, pending.revision);
+  }
+  function queueSettings(values: Settings, revision: number): Promise<void> {
+    const run = saveQueue.current.catch(() => {}).then(async () => {
+      await save(values);
+      if (revision === sliderRevision.current) { setError(""); setSaved(true); }
+    }).catch((e: any) => {
+      if (revision === sliderRevision.current) { setError(e?.message || "Не удалось сохранить настройки."); setSaved(false); }
+    });
+    saveQueue.current = run;
+    return run;
+  }
+  function saveSlider(name: "context" | "contextStep" | "contextPreload", value: number) {
     // Settings belong to the account, not the active chat. Persist after each
     // slider adjustment, without requiring a separate manual Save action.
     setSaved(false);
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    const values = { ...form.getValues(), [name]: value, contextDefaultsApplied: true };
-    saveTimer.current = setTimeout(async () => {
-      try { await save(values); setError(""); setSaved(true); }
-      catch (e: any) { setError(e.message || "Не удалось сохранить глобальные настройки."); }
-      finally { saveTimer.current = null; }
-    }, 350);
+    const revision = ++sliderRevision.current;
+    const values = { ...form.getValues(), [name]: value, contextDefaultsApplied: true, contextManualDefaultsApplied: true };
+    pendingSlider.current = { values, revision };
+    saveTimer.current = setTimeout(flushSlider, 350);
   }
-  useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
+  useEffect(() => () => {
+    // Flush any pending slider choice when leaving the settings page.
+    flushSlider();
+  }, []);
   useEffect(() => { if (open) { form.reset(settings); setSaved(false); setError(""); setConnection(null); setHost(settings.ollamaUrl || status?.host || "http://127.0.0.1:11434"); } }, [open]);
+  // When settings arrive from the server after the dialog is already open,
+  // show the persisted values rather than stale form defaults.
+  useEffect(() => { if (open && !saveTimer.current && !form.formState.isDirty) form.reset(settings); }, [settings, open]);
   async function checkConnection() {
     setChecking(true); setError(""); setConnection(null);
     try {
       const response = await apiRequest("POST", "/api/connection", { url: host });
       const result = await response.json();
       setConnection(result);
-      if (result.connected) {
+      if (result.saved) {
         setHost(result.host);
         form.setValue("ollamaUrl", result.host);
         queryClient.setQueryData(["/api/status"], result);
@@ -607,18 +665,18 @@ function SettingsDialog({ open, setOpen, tab, setTab, settings, save, status, re
   const shown = connection || status;
   return <Dialog open={open} onOpenChange={setOpen}><DialogContent className="app-dialog settings-dialog"><DialogHeader><DialogTitle>Настройки пространства</DialogTitle><DialogDescription>Пусть AI работает так, как удобно вам.</DialogDescription></DialogHeader><div className="dialog-tabs" role="tablist">{[["connection", "Подключение"], ["generation", "Ответы"], ["appearance", "Оформление"]].map(([id, label]) => <button role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} data-testid={`tab-${id}`} key={id} onClick={() => { setTab(id); setSaved(false); }}>{label}</button>)}</div>
     {tab === "connection" ? <div className="connection-settings">
-      <div className={`connection-box ${shown?.connected ? "connected" : ""}`}><span className="connection-large">{shown?.connected ? <CheckCircle2 size={23}/> : <Plug size={23}/>}</span><div><h3>{shown?.backend === false ? "Не запущен сервер Forma" : shown?.connected ? "Ollama на связи" : "Подключение к Ollama"}</h3><p>{shown?.connected ? `Доступно моделей: ${shown.models.length}` : shown?.backend === false ? "Один фронтенд не подключается к Ollama." : "Укажите адрес уже работающей Ollama."}</p></div><span className={`status-dot ${shown?.connected ? "green" : ""}`}/></div>
+      <div className={`connection-box ${shown?.connected ? "connected" : ""}`}><span className="connection-large">{shown?.connected ? <CheckCircle2 size={23}/> : <Plug size={23}/>}</span><div><h3>{shown?.backend === false ? "Не запущен сервер Forma" : shown?.connected ? "Ollama на связи" : "Подключение к Ollama"}</h3><p>{shown?.connected ? `Доступно моделей: ${shown.models.length}` : shown?.backend === false ? "Один фронтенд не подключается к Ollama." : "Forma переподключается автоматически. Для локальной Ollama пробует запустить установленный сервер."}</p></div><span className={`status-dot ${shown?.connected ? "green" : ""}`}/></div>
       <label className="field-label" htmlFor="ollama-url">Адрес вашей Ollama</label>
       <div className="host-field editable-host"><Monitor size={17}/><input id="ollama-url" data-testid="input-ollama-url" value={host} disabled={checking} onChange={e => { setHost(e.target.value); setConnection(null); }} placeholder="http://127.0.0.1:11434" onKeyDown={e => { if (e.key === "Enter" && !status?.preview) checkConnection(); }}/></div>
-      <p className="field-hint">Изменения сохраняются после успешной проверки. Перезапуск не нужен.</p>
+      <p className="field-hint">Адрес сохраняется и при временно недоступной Ollama. Forma будет подключаться к нему автоматически.</p>
       {shown?.message && <div className={`connection-feedback ${shown.connected ? "success" : ""}`} role="status" data-testid="status-connection-details">{shown.message}</div>}
       {error && <p className="inline-error" role="alert" data-testid="error-connection">{error}</p>}
       
       
       <div className="dialog-actions"><button className="secondary-button" data-testid="button-refresh-backend" disabled={refreshing} onClick={refresh}><RefreshCw size={15}/>Обновить статус</button><button className="primary-button" data-testid="button-check-connection" disabled={checking} onClick={checkConnection}>{checking ? <Loader2 className="spin" size={16}/> : <Plug size={16}/>}Проверить и сохранить</button></div>
     </div> :
-    <Form {...form}><form onSubmit={form.handleSubmit(async values => { try { if (saveTimer.current) clearTimeout(saveTimer.current); saveTimer.current = null; setError(""); await save(values); setSaved(true); } catch (e: any) { setError(e.message); } })} className="settings-form">
-      {tab === "generation" ? <><div className="field"><label htmlFor="temperature">Творческий подход <span>{Number(form.watch("temperature")).toFixed(1)}</span></label><input id="temperature" data-testid="input-temperature" type="range" min="0" max="2" step="0.1" {...form.register("temperature", { valueAsNumber: true })}/><div className="range-labels"><span>Точнее</span><span>Креативнее</span></div></div><div className="field"><label htmlFor="context">Размер контекста при ручном режиме</label><select id="context" className="text-input" data-testid="select-context" disabled={Number(form.watch("contextStep")) > 0} {...form.register("context", { valueAsNumber: true })}>{[2048, 4096, 8192, 16384, 32768, 49152, 65536, 98304, 131072, 196608, 262144].map(n => <option key={n} value={n}>{(n / 1024).toLocaleString("ru")}K токенов</option>)}</select><p className="field-hint">Используется, если автоматическое расширение отключено (шаг 0). Автоматическое расширение ограничено 256K и возможностями модели.</p></div>
+    <Form {...form}><form onSubmit={form.handleSubmit(async values => { if (saveTimer.current) clearTimeout(saveTimer.current); saveTimer.current = null; pendingSlider.current = null; setError(""); setSaved(false); await queueSettings({ ...values, contextManualDefaultsApplied: true }, ++sliderRevision.current); })} className="settings-form">
+      {tab === "generation" ? <><div className="field"><label htmlFor="temperature">Творческий подход <span>{Number(form.watch("temperature")).toFixed(1)}</span></label><input id="temperature" data-testid="input-temperature" type="range" min="0" max="2" step="0.1" {...form.register("temperature", { valueAsNumber: true })}/><div className="range-labels"><span>Точнее</span><span>Креативнее</span></div></div><div className="field"><label htmlFor="context">Ручной размер контекста <span>{(Number(form.watch("context") ?? 262144) / 1024).toLocaleString("ru")}K токенов</span></label><input id="context" data-testid="slider-context-manual" type="range" min="2048" max="262144" step="1024" {...manualControl} onChange={e => { manualControl.onChange(e); saveSlider("context", Number(e.currentTarget.value)); }} onPointerUp={flushSlider} onKeyUp={flushSlider}/><div className="range-labels"><span>2K</span><span>256K</span></div><p className="field-hint">Настройка общая для всех чатов и сохраняется автоматически. Ручной размер применяется, когда шаг автоматического расширения равен 0. При включённом автоматическом расширении окно начинается с указанного шага, а не с 256K.</p></div>
       <div className="field"><label htmlFor="context-step">Загружать модель по достижении N токенов <span>{(Number(form.watch("contextStep") || 0) / 1024).toLocaleString("ru")}K</span></label><input id="context-step" data-testid="slider-context-step" type="range" min="0" max="32768" step="1024" {...stepControl} onChange={e => { stepControl.onChange(e); saveSlider("contextStep", Number(e.currentTarget.value)); }}/><div className="range-labels"><span>0 — выключено</span><span>32K</span></div><p className="field-hint">Шаг увеличения окна. Например, 8K → 16K → 24K → 32K … до 256K. При значении 0 сохраняется ручной размер контекста.</p></div>
       <div className="field"><label htmlFor="context-preload">Заранее загружать модель, если до лимита осталось N токенов <span>{(Number(form.watch("contextPreload") || 0) / 1024).toLocaleString("ru")}K</span></label><input id="context-preload" data-testid="slider-context-preload" type="range" min="0" max="16384" step="1024" disabled={Number(form.watch("contextStep")) === 0} {...preloadControl} onChange={e => { preloadControl.onChange(e); saveSlider("contextPreload", Number(e.currentTarget.value)); }}/><div className="range-labels"><span>0 — без упреждения</span><span>16K</span></div><p className="field-hint">Ollama заранее загрузит расширенное окно после завершения ответа. В режиме упреждения размер может удвоиться: 32K → 64K, 48K → 96K (максимум 256K). Для маленьких окон запас ограничен половиной окна.</p></div><div className="field"><label htmlFor="system">Инструкция для ассистента</label><textarea id="system" data-testid="input-system" rows={4} className="text-input" maxLength={12000} {...form.register("system")}/><p className="field-hint">Тон общения, язык и правила для всех новых ответов.</p></div></> : <div className="appearance-options">{[["light", "Светлая", Sun], ["dark", "Тёмная", Moon], ["system", "Как в системе", Monitor]].map(([id, label, Icon]: any) => <button type="button" key={id} data-testid={`theme-${id}`} className={`theme-option ${form.watch("theme") === id ? "chosen" : ""}`} onClick={() => { form.setValue("theme", id); setSaved(false); }}><div className={`theme-preview ${id}`}><div/><section><span/><span/><span/></section></div><div><Icon size={16}/>{label}{form.watch("theme") === id && <Check size={16}/>}</div></button>)}</div>}
       {error && <p className="inline-error" role="alert">{error}</p>}<div className="dialog-actions"><span className="saved-status" role="status">{saved && <><Check size={16}/>Изменения сохранены</>}</span><button type="submit" className="primary-button" data-testid="button-save-settings" disabled={form.formState.isSubmitting}>{form.formState.isSubmitting && <Loader2 className="spin" size={16}/>}Сохранить настройки</button></div>

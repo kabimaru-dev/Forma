@@ -35,3 +35,64 @@ export async function checkOllama(host: string) {
     return { connected: false, backend: true, host, models: [], message: connectionError(error, host), editable: !previewMode, preview: previewMode };
   }
 }
+
+// A local Ollama process may be stopped after sleep/reboot. For the default
+// loopback endpoint only, Forma can launch an already-installed Ollama CLI.
+// It never installs software, changes service definitions or starts remote hosts.
+import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+
+let localRunner: ChildProcess | null = null;
+let lastLaunch = 0;
+let launchError = "";
+const lastGood = new Map<string, { at: number; models: any[] }>();
+const failures = new Map<string, number>();
+const localOllamaHost = (host: string) => ["http://127.0.0.1:11434", "http://localhost:11434", "http://[::1]:11434"].includes(host);
+
+export function ensureLocalOllama(host: string): boolean {
+  if (previewMode || !localOllamaHost(host) || process.env.FORMA_OLLAMA_AUTOSTART === "false") return false;
+  if (localRunner && localRunner.exitCode === null && !localRunner.killed) return true;
+  if (Date.now() - lastLaunch < 30000) return false;
+  lastLaunch = Date.now();
+  const candidate = [process.env.OLLAMA_BINARY, "/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"].find(p => p && existsSync(p));
+  try {
+    const child = spawn(candidate || "ollama", ["serve"], {
+      stdio: "ignore", windowsHide: true,
+      env: { ...process.env, OLLAMA_HOST: "127.0.0.1:11434" },
+    });
+    localRunner = child;
+    launchError = "";
+    child.on("error", error => {
+      launchError = `Не удалось автоматически запустить Ollama: ${error.message}`;
+      console.warn("Forma Ollama autostart:", error.message);
+      if (localRunner === child) localRunner = null;
+    });
+    child.on("exit", (code, signal) => {
+      if (localRunner === child) localRunner = null;
+      if (code !== 0 && code !== null) launchError = `Ollama завершилась с кодом ${code}.`;
+    });
+    return true;
+  } catch (error: any) {
+    launchError = `Не удалось автоматически запустить Ollama: ${error.message}`;
+    return false;
+  }
+}
+
+export async function reconnectingStatus(host: string) {
+  const status = await checkOllama(host);
+  if (status.connected) {
+    lastGood.set(host, { at: Date.now(), models: status.models });
+    failures.delete(host);
+    return { ...status, reconnecting: false };
+  }
+  const failureCount = (failures.get(host) || 0) + 1;
+  failures.set(host, failureCount);
+  const shouldLaunch = /ECONNREFUSED|ECONNRESET|fetch failed/.test(status.message);
+  if (shouldLaunch) ensureLocalOllama(host);
+  // A single slow /api/tags probe during model loading is not a disconnect.
+  const previous = lastGood.get(host);
+  if (previous && failureCount === 1 && Date.now() - previous.at < 120000) {
+    return { ...status, connected: true, models: previous.models, reconnecting: true, message: "Проверяем связь с Ollama; повторное подключение выполняется автоматически." };
+  }
+  return { ...status, reconnecting: true, message: launchError ? `${status.message} ${launchError}` : status.message };
+}
